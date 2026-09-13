@@ -10,7 +10,8 @@ WORKDIR /app
 RUN apk add --no-cache openssl
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN npx prisma generate && npm run build \
+RUN rm -f tsconfig.build.tsbuildinfo \
+  && npx prisma generate && npm run build \
   && npx tsc prisma/seed.ts --outDir dist/seed --rootDir prisma --module commonjs --moduleResolution node --esModuleInterop --target ES2022 --skipLibCheck --declaration false --sourceMap false
 
 FROM node:22-alpine AS runner

@@ -41,4 +41,12 @@ if [ "${SEED_DEMO:-}" = "true" ]; then
 fi
 
 echo "Starting server"
-exec node dist/main.js
+if [ -f dist/main.js ]; then
+  exec node dist/main.js
+fi
+if [ -f dist/src/main.js ]; then
+  exec node dist/src/main.js
+fi
+echo "Could not find dist/main.js or dist/src/main.js"
+find dist -name 'main.js' || true
+exit 1
