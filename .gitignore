@@ -1,0 +1,29 @@
+# compiled
+dist
+node_modules
+coverage
+
+# env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# logs
+*.log
+npm-debug.log*
+
+# prisma
+prisma/*.db
+
+# os / ide
+.DS_Store
+.idea
+.vscode
+
+# test
+tmp
+.turbo
+
+# k6
+load/results.json

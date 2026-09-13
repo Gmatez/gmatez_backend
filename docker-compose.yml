@@ -1,0 +1,53 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ubuntu
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: social_calling
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ubuntu -d social_calling"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    ports:
+      - "43121:43121"
+    environment:
+      NODE_ENV: development
+      PORT: 43121
+      HOST: 0.0.0.0
+      DATABASE_URL: postgresql://ubuntu:postgres@postgres:5432/social_calling?schema=public
+      REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: replace-with-at-least-32-character-access-secret
+      JWT_REFRESH_SECRET: replace-with-at-least-32-character-refresh-secret
+      PAYMENT_WEBHOOK_SECRET: replace-payment-webhook-secret
+      CALLING_WEBHOOK_SECRET: replace-calling-webhook-secret
+      OTP_PEPPER: replace-otp-pepper-at-least-32-chars
+      CALLING_PROVIDER: mock
+      PAYMENT_PROVIDER: mock
+      PUSH_PROVIDER: mock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata:

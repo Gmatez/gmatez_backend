@@ -1,0 +1,63 @@
+# Free demo host. Postgres expires after 30 days. The web service sleeps
+# after 15 minutes and wakes on the next request (about a minute).
+services:
+  - type: web
+    name: gmatez-api
+    runtime: docker
+    plan: free
+    region: singapore
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: development
+      - key: HOST
+        value: 0.0.0.0
+      - key: SEED_DEMO
+        value: "true"
+      - key: OTP_EXPOSE
+        value: "false"
+      - key: ALLOW_MOCK_PROVIDERS
+        value: "true"
+      - key: CALLING_PROVIDER
+        value: mock
+      - key: PAYMENT_PROVIDER
+        value: mock
+      - key: PUSH_PROVIDER
+        value: mock
+      - key: LOG_LEVEL
+        value: info
+      - key: CORS_ORIGINS
+        value: https://gmatez-api.onrender.com
+      - key: DATABASE_URL
+        fromDatabase:
+          name: gmatez-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: gmatez-redis
+          type: keyvalue
+          property: connectionString
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: PAYMENT_WEBHOOK_SECRET
+        generateValue: true
+      - key: CALLING_WEBHOOK_SECRET
+        generateValue: true
+      - key: OTP_PEPPER
+        generateValue: true
+
+  - type: keyvalue
+    name: gmatez-redis
+    plan: free
+    region: singapore
+    maxmemoryPolicy: noeviction
+    ipAllowList: []
+
+databases:
+  - name: gmatez-db
+    plan: free
+    region: singapore
+    databaseName: social_calling
+    user: gmatez

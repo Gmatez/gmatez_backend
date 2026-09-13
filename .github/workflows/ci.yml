@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ubuntu
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: social_calling_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ubuntu -d social_calling_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://ubuntu:postgres@localhost:5432/social_calling_test?schema=public
+      REDIS_URL: redis://127.0.0.1:6379
+      JWT_ACCESS_SECRET: test-access-secret-change-me-32chars
+      JWT_REFRESH_SECRET: test-refresh-secret-change-me-32ch
+      PAYMENT_WEBHOOK_SECRET: test-payment-webhook-secret
+      CALLING_WEBHOOK_SECRET: test-calling-webhook-secret
+      OTP_PEPPER: test-otp-pepper-change-me-32chars
+      CALLING_PROVIDER: mock
+      PAYMENT_PROVIDER: mock
+      PUSH_PROVIDER: mock
+      PORT: 43121
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npx prisma migrate deploy
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test -- --runInBand
+      - run: npm run test:e2e
+      - run: npm run build

@@ -1,0 +1,451 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum Gender {
+  FEMALE
+  MALE
+  OTHER
+  UNSPECIFIED
+}
+
+enum CallType {
+  VOICE
+  VIDEO
+}
+
+enum CallStatus {
+  INITIATED
+  RINGING
+  ACCEPTED
+  CONNECTING
+  CONNECTED
+  REJECTED
+  TIMEOUT
+  CANCELLED
+  FAILED
+  ENDED
+}
+
+enum LedgerEntryType {
+  CREDIT
+  DEBIT
+}
+
+enum LedgerReason {
+  PAYMENT_TOPUP
+  CALL_CHARGE
+  CALL_REFUND
+  ADMIN_ADJUSTMENT
+  PROMOTIONAL_CREDIT
+  CREATOR_EARNING
+  PAYOUT
+}
+
+enum PaymentStatus {
+  PENDING
+  REQUIRES_ACTION
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+enum ReportStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  DISMISSED
+}
+
+enum ReportReason {
+  HARASSMENT
+  SPAM
+  INAPPROPRIATE_CONTENT
+  FRAUD
+  OTHER
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+enum PayoutStatus {
+  REQUESTED
+  PROCESSING
+  COMPLETED
+  FAILED
+  REJECTED
+}
+
+enum HostStatus {
+  PENDING_REVIEW
+  ACTIVE
+  SUSPENDED
+  REJECTED
+}
+
+enum HostAvailability {
+  OFFLINE
+  ONLINE
+  BUSY
+  PAUSED
+}
+
+model User {
+  id           String     @id @default(uuid())
+  email        String     @unique
+  passwordHash String
+  role         UserRole   @default(USER)
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  profile         Profile?
+  wallet          Wallet?
+  refreshTokens   RefreshToken[]
+  callerCalls     Call[]              @relation("CallCaller")
+  calleeCalls     Call[]              @relation("CallCallee")
+  payments        Payment[]
+  deviceTokens    DeviceToken[]
+  notifications   AppNotification[]
+  blocksInitiated Block[]            @relation("Blocker")
+  blocksReceived  Block[]            @relation("Blocked")
+  reportsFiled    Report[]            @relation("Reporter")
+  reportsAgainst  Report[]            @relation("Reported")
+  analyticsEvents AnalyticsEvent[]
+  auditLogs       AuditLog[]
+  conversationsA  Conversation[]     @relation("ConversationA")
+  conversationsB  Conversation[]     @relation("ConversationB")
+  messagesSent    Message[]
+  payoutRequests  PayoutRequest[]
+  hostProfile     HostProfile?
+
+  @@index([status, createdAt])
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  familyId  String
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([familyId])
+}
+
+model Profile {
+  userId               String    @id
+  displayName          String
+  bio                  String    @default("")
+  gender               Gender    @default(UNSPECIFIED)
+  country              String?
+  language             String?
+  avatarUrl            String?
+  isDiscoverable       Boolean   @default(true)
+  ratePerMinuteCents   Int       @default(100)
+  lastActiveAt         DateTime  @default(now())
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Discovery feed: discoverable profiles ordered by recency.
+  @@index([isDiscoverable, lastActiveAt(sort: Desc)])
+  // Language filter on the discovery feed.
+  @@index([language, isDiscoverable, lastActiveAt(sort: Desc)])
+}
+
+model HostProfile {
+  userId                    String           @id
+  status                    HostStatus       @default(PENDING_REVIEW)
+  availability              HostAvailability @default(OFFLINE)
+  voiceEnabled              Boolean          @default(true)
+  videoEnabled              Boolean          @default(true)
+  voiceRatePerMinuteCents   Int              @default(100)
+  videoRatePerMinuteCents   Int              @default(150)
+  languages                 String[]         @default([])
+  interests                 String[]         @default([])
+  applicationBio            String           @default("")
+  reviewNote                String?
+  submittedAt               DateTime         @default(now())
+  reviewedAt                DateTime?
+  reviewedById              String?
+  createdAt                 DateTime         @default(now())
+  updatedAt                 DateTime         @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, availability])
+  @@index([status, updatedAt])
+}
+
+model Wallet {
+  id                     String   @id @default(uuid())
+  userId                 String   @unique
+  currency               String   @default("USD")
+  availableBalanceCents  Int      @default(0)
+  heldBalanceCents        Int      @default(0)
+  version                Int      @default(0)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  user   User                @relation(fields: [userId], references: [id], onDelete: Restrict)
+  ledger  WalletLedgerEntry[]
+}
+
+model WalletLedgerEntry {
+  id                String          @id @default(uuid())
+  walletId          String
+  type              LedgerEntryType
+  reason            LedgerReason
+  amountCents       Int
+  balanceAfterCents Int
+  idempotencyKey    String           @unique
+  referenceType     String?
+  referenceId       String?
+  metadata          Json?
+  createdAt         DateTime       @default(now())
+
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+
+  @@index([walletId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([referenceType, referenceId])
+}
+
+model Payment {
+  id                 String        @id @default(uuid())
+  userId             String
+  amountCents        Int
+  currency           String       @default("USD")
+  status             PaymentStatus @default(PENDING)
+  provider           String
+  providerPaymentId String        @unique
+  idempotencyKey     String        @unique
+  clientSecret       String?
+  failureReason      String?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([status, createdAt])
+}
+
+model ProviderEvent {
+  id          String   @id @default(uuid())
+  provider    String
+  eventId     String
+  eventType   String
+  payloadHash String
+  createdAt   DateTime @default(now())
+
+  @@unique([provider, eventId])
+}
+
+model Call {
+  id                   String     @id @default(uuid())
+  callerId             String
+  calleeId             String
+  callType             CallType   @default(VOICE)
+  status               CallStatus @default(INITIATED)
+  version              Int        @default(0)
+  provider             String
+  providerSessionId    String     @unique
+  ratePerMinuteCents   Int
+  billedSeconds        Int        @default(0)
+  billedAmountCents    Int        @default(0)
+  heldAmountCents      Int        @default(0)
+  connectedAt          DateTime?
+  endedAt              DateTime?
+  endReason            String?
+  callerHeartbeatAt    DateTime?
+  calleeHeartbeatAt    DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime @updatedAt
+
+  caller User        @relation("CallCaller", fields: [callerId], references: [id], onDelete: Restrict)
+  callee User        @relation("CallCallee", fields: [calleeId], references: [id], onDelete: Restrict)
+  events CallEvent[]
+
+  @@index([callerId, createdAt(sort: Desc)])
+  @@index([calleeId, createdAt(sort: Desc)])
+  @@index([status, updatedAt])
+}
+
+model CallEvent {
+  id        String   @id @default(uuid())
+  callId    String
+  fromStatus CallStatus?
+  toStatus   CallStatus
+  actorId    String?
+  source     String
+  note       String?
+  createdAt DateTime @default(now())
+
+  call Call @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@index([callId, createdAt])
+}
+
+model Block {
+  id        String   @id @default(uuid())
+  blockerId String
+  blockedId String
+  createdAt DateTime @default(now())
+
+  blocker User @relation("Blocker", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked User @relation("Blocked", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
+  @@index([blockedId])
+}
+
+model Report {
+  id         String       @id @default(uuid())
+  reporterId String
+  reportedId String
+  reason     ReportReason
+  details    String       @default("")
+  status     ReportStatus @default(OPEN)
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  reporter User @relation("Reporter", fields: [reporterId], references: [id], onDelete: Restrict)
+  reported User @relation("Reported", fields: [reportedId], references: [id], onDelete: Restrict)
+
+  @@index([reportedId, status, createdAt])
+  @@index([reporterId, createdAt])
+}
+
+model DeviceToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  platform  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model AppNotification {
+  id        String             @id @default(uuid())
+  userId    String
+  type      String
+  title     String
+  body      String
+  data      Json?
+  status    NotificationStatus @default(PENDING)
+  readAt    DateTime?
+  createdAt DateTime           @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+}
+
+model AnalyticsEvent {
+  id         String   @id @default(uuid())
+  userId     String?
+  eventType  String
+  properties Json?
+  createdAt  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([eventType, createdAt])
+  @@index([userId, createdAt])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  action     String
+  targetType String
+  targetId   String
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([targetType, targetId])
+  @@index([createdAt])
+}
+
+model Conversation {
+  id              String   @id @default(uuid())
+  participantAId  String
+  participantBId  String
+  lastMessageAt   DateTime @default(now())
+  lastMessagePreview String @default("")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  participantA User      @relation("ConversationA", fields: [participantAId], references: [id], onDelete: Restrict)
+  participantB User      @relation("ConversationB", fields: [participantBId], references: [id], onDelete: Restrict)
+  messages     Message[]
+
+  @@unique([participantAId, participantBId])
+  @@index([participantAId, lastMessageAt(sort: Desc)])
+  @@index([participantBId, lastMessageAt(sort: Desc)])
+}
+
+model Message {
+  id             String    @id @default(uuid())
+  conversationId String
+  senderId       String
+  body           String
+  idempotencyKey String    @unique
+  readAt         DateTime?
+  createdAt      DateTime  @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       User         @relation(fields: [senderId], references: [id], onDelete: Restrict)
+
+  @@index([conversationId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([senderId, createdAt])
+}
+
+model PayoutRequest {
+  id             String       @id @default(uuid())
+  userId         String
+  amountCents    Int
+  status         PayoutStatus @default(REQUESTED)
+  failureReason  String?
+  idempotencyKey String       @unique
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  processedAt    DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([status, createdAt])
+}
