@@ -7,6 +7,7 @@ const password = 'ChangeMe123!';
 
 async function upsertUser(input: {
   email: string;
+  phone?: string;
   role?: 'USER' | 'ADMIN';
   displayName: string;
   bio: string;
@@ -22,6 +23,7 @@ async function upsertUser(input: {
   const user = await prisma.user.upsert({
     where: { email: input.email },
     update: {
+      phone: input.phone,
       profile: {
         update: {
           displayName: input.displayName,
@@ -37,6 +39,7 @@ async function upsertUser(input: {
     },
     create: {
       email: input.email,
+      phone: input.phone,
       passwordHash,
       role: input.role ?? 'USER',
       profile: {
@@ -125,7 +128,8 @@ async function main() {
   });
   const alice = await upsertUser({
     email: 'alice@example.com',
-    displayName: 'Alice',
+    phone: '+919778741983',
+    displayName: 'Alex Kumar',
     bio: 'Caller with credits for development',
     language: 'en',
     country: 'US',
@@ -136,6 +140,7 @@ async function main() {
   });
   const bob = await upsertUser({
     email: 'bob@example.com',
+    phone: '+919876543210',
     displayName: 'Bob',
     bio: 'English conversations, calm and curious',
     language: 'en',

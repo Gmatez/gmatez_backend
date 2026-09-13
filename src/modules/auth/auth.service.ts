@@ -192,6 +192,83 @@ export class AuthService {
     return this.issueSession(user.id, user.role);
   }
 
+  async requestPhoneOtp(phoneInput: string): Promise<{ expiresInSeconds: number }> {
+    const phone = normalizePhone(phoneInput);
+    const otp = this.demoOtp() ?? randomOtp();
+    const hash = hmacSha256(this.config.get('OTP_PEPPER'), otp);
+    await this.redis.client.set(
+      `otp:phone:${phone}`,
+      hash,
+      'EX',
+      OTP_TTL_SECONDS,
+    );
+    this.logger.log({ phone: maskPhone(phone) }, 'phone otp issued');
+    return { expiresInSeconds: OTP_TTL_SECONDS };
+  }
+
+  async verifyPhoneOtp(phoneInput: string, otp: string) {
+    const phone = normalizePhone(phoneInput);
+    const key = `otp:phone:${phone}`;
+    const stored = await this.redis.client.get(key);
+    const hash = hmacSha256(this.config.get('OTP_PEPPER'), otp.trim());
+    if (!stored || !timingSafeEqualHex(stored, hash)) {
+      throw new AppError(
+        ErrorCodes.OTP_INVALID,
+        'Invalid or expired OTP',
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+    await this.redis.client.del(key);
+
+    const existing = await this.prisma.user.findUnique({ where: { phone } });
+    if (existing) {
+      if (existing.status === UserStatus.SUSPENDED) {
+        throw new AppError(
+          ErrorCodes.USER_SUSPENDED,
+          'Account is suspended',
+          HttpStatus.FORBIDDEN,
+        );
+      }
+      if (existing.status !== UserStatus.ACTIVE) {
+        throw new AppError(
+          ErrorCodes.INVALID_CREDENTIALS,
+          'Invalid credentials',
+          HttpStatus.UNAUTHORIZED,
+        );
+      }
+      return this.issueSession(existing.id, existing.role);
+    }
+
+    const passwordHash = await argon2.hash(randomToken(24), {
+      type: argon2.argon2id,
+    });
+    const digits = phone.replace(/\D/g, '');
+    const user = await this.prisma.user.create({
+      data: {
+        email: `p${digits}@phone.gmatez.invalid`,
+        phone,
+        passwordHash,
+        profile: {
+          create: { displayName: `User ${digits.slice(-4)}` },
+        },
+        wallet: { create: {} },
+      },
+    });
+    this.logger.log({ userId: user.id }, 'phone user created');
+    return this.issueSession(user.id, user.role);
+  }
+
+  private demoOtp(): string | null {
+    const configured = process.env.MOCK_OTP?.trim();
+    if (configured && /^\d{6}$/.test(configured)) {
+      return configured;
+    }
+    if (process.env.ALLOW_MOCK_PROVIDERS === 'true') {
+      return '123456';
+    }
+    return null;
+  }
+
   private async issueSession(
     userId: string,
     role: 'USER' | 'ADMIN',
@@ -224,6 +301,36 @@ export class AuthService {
       expiresIn: this.config.get('JWT_ACCESS_TTL'),
     };
   }
+}
+
+function randomOtp(): string {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function normalizePhone(input: string): string {
+  const compact = input.replace(/[\s()-]/g, '');
+  const phone = compact.startsWith('+')
+    ? `+${compact.slice(1).replace(/\D/g, '')}`
+    : compact.replace(/\D/g, '');
+  const withCountry = phone.startsWith('+')
+    ? phone
+    : phone.length === 10
+      ? `+91${phone}`
+      : phone.startsWith('91') && phone.length === 12
+        ? `+${phone}`
+        : '';
+  if (!/^\+[1-9]\d{7,14}$/.test(withCountry)) {
+    throw new AppError(
+      ErrorCodes.VALIDATION_FAILED,
+      'Enter a valid phone number',
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+  return withCountry;
+}
+
+function maskPhone(phone: string): string {
+  return `${phone.slice(0, 3)}******${phone.slice(-2)}`;
 }
 
 function parseDurationMs(ttl: string): number {

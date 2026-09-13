@@ -18,6 +18,8 @@ services:
         value: "false"
       - key: ALLOW_MOCK_PROVIDERS
         value: "true"
+      - key: MOCK_OTP
+        value: "123456"
       - key: CALLING_PROVIDER
         value: mock
       - key: PAYMENT_PROVIDER

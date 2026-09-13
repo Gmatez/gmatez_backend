@@ -1,6 +1,6 @@
 import { Body, Controller, HttpCode, Post } from '@nestjs/common';
 import { ApiProperty, ApiTags } from '@nestjs/swagger';
-import { IsEmail, IsString, MinLength } from 'class-validator';
+import { IsEmail, IsString, Matches, MinLength } from 'class-validator';
 import { Public } from '../../common/decorators/public.decorator';
 import { AuthService } from './auth.service';
 
@@ -41,6 +41,25 @@ export class OtpRequestDto {
   @ApiProperty()
   @IsEmail()
   email!: string;
+}
+
+export class PhoneOtpRequestDto {
+  @ApiProperty({ example: '+919778741983' })
+  @IsString()
+  @Matches(/^[+\d][\d\s()-]{7,20}$/)
+  phone!: string;
+}
+
+export class PhoneOtpVerifyDto {
+  @ApiProperty({ example: '+919778741983' })
+  @IsString()
+  @Matches(/^[+\d][\d\s()-]{7,20}$/)
+  phone!: string;
+
+  @ApiProperty({ example: '123456' })
+  @IsString()
+  @MinLength(6)
+  otp!: string;
 }
 
 export class OtpVerifyDto {
@@ -98,5 +117,19 @@ export class AuthController {
   @Post('otp/verify')
   verifyOtp(@Body() body: OtpVerifyDto) {
     return this.auth.verifyOtp(body.email, body.otp);
+  }
+
+  @Public()
+  @HttpCode(200)
+  @Post('phone/otp/request')
+  requestPhoneOtp(@Body() body: PhoneOtpRequestDto) {
+    return this.auth.requestPhoneOtp(body.phone);
+  }
+
+  @Public()
+  @HttpCode(200)
+  @Post('phone/otp/verify')
+  verifyPhoneOtp(@Body() body: PhoneOtpVerifyDto) {
+    return this.auth.verifyPhoneOtp(body.phone, body.otp);
   }
 }
