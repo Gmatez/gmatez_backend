@@ -37,7 +37,7 @@ done
 
 if [ "${SEED_DEMO:-}" = "true" ]; then
   echo "Seeding demo accounts"
-  node --experimental-strip-types prisma/seed.ts
+  node dist/seed/seed.js
 fi
 
 echo "Starting server"
