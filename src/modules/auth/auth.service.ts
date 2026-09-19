@@ -1,8 +1,8 @@
-import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { UserStatus } from '@prisma/client';
 import * as argon2 from 'argon2';
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import {
   hmacSha256,
   randomToken,
@@ -10,11 +10,20 @@ import {
   timingSafeEqualHex,
 } from '../../common/crypto/hashing';
 import { AppError, ErrorCodes } from '../../common/errors/app-error';
+import { maskPhone, normalizePhoneE164 } from '../../common/phone/phone.util';
+import { RateLimitService } from '../../common/rate-limit/rate-limit.service';
 import { AppConfigService } from '../../config/app-config';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
+import {
+  OTP_DELIVERY_PROVIDER,
+  type OtpDeliveryProvider,
+} from '../../providers/otp/otp-delivery-provider';
 
-const OTP_TTL_SECONDS = 300;
+type StoredOtp = {
+  hash: string;
+  attempts: number;
+};
 
 @Injectable()
 export class AuthService {
@@ -25,8 +34,12 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly config: AppConfigService,
     private readonly redis: RedisService,
+    private readonly rateLimit: RateLimitService,
+    @Inject(OTP_DELIVERY_PROVIDER)
+    private readonly otpDelivery: OtpDeliveryProvider,
   ) {}
 
+  /** Legacy email registration — kept for admin/seed/e2e; not the product login path. */
   async register(email: string, password: string, displayName: string) {
     const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
     try {
@@ -45,7 +58,7 @@ export class AuthService {
         });
         return created;
       });
-      this.logger.log({ userId: user.id }, 'user registered');
+      this.logger.log({ userId: user.id }, 'auth.register');
       return this.issueSession(user.id, user.role);
     } catch (error) {
       const code = (error as { code?: string }).code;
@@ -60,7 +73,16 @@ export class AuthService {
     }
   }
 
-  async login(email: string, password: string) {
+  /** Legacy email/password login — kept for admin tooling and e2e. */
+  async login(email: string, password: string, clientIp = 'unknown') {
+    await this.rateLimit.assertAllowed({
+      key: `gmatez:ratelimit:login:ip:${clientIp}`,
+      limit: 30,
+      windowSeconds: 3600,
+      code: ErrorCodes.RATE_LIMITED,
+      message: 'Too many login attempts. Please try again later.',
+    });
+
     const user = await this.prisma.user.findUnique({
       where: { email: email.toLowerCase() },
     });
@@ -79,20 +101,8 @@ export class AuthService {
         HttpStatus.UNAUTHORIZED,
       );
     }
-    if (user.status === UserStatus.SUSPENDED) {
-      throw new AppError(
-        ErrorCodes.USER_SUSPENDED,
-        'Account is suspended',
-        HttpStatus.FORBIDDEN,
-      );
-    }
-    if (user.status === UserStatus.DELETED) {
-      throw new AppError(
-        ErrorCodes.INVALID_CREDENTIALS,
-        'Invalid credentials',
-        HttpStatus.UNAUTHORIZED,
-      );
-    }
+    this.assertAccountEligible(user.status);
+    this.logger.log({ userId: user.id }, 'auth.login');
     return this.issueSession(user.id, user.role);
   }
 
@@ -102,23 +112,72 @@ export class AuthService {
       where: { tokenHash },
       include: { user: true },
     });
-    if (!stored || stored.revokedAt || stored.expiresAt < new Date()) {
-      if (stored?.revokedAt) {
-        await this.prisma.refreshToken.updateMany({
-          where: { familyId: stored.familyId, revokedAt: null },
-          data: { revokedAt: new Date() },
-        });
-      }
+
+    if (!stored) {
       throw new AppError(
-        ErrorCodes.REFRESH_TOKEN_INVALID,
+        ErrorCodes.AUTH_INVALID_SESSION,
         'Invalid refresh token',
         HttpStatus.UNAUTHORIZED,
       );
     }
-    await this.prisma.refreshToken.update({
-      where: { id: stored.id },
+
+    if (stored.revokedAt) {
+      // True reuse vs concurrent refresh race:
+      // the loser of an in-flight rotation may observe the claimed token as
+      // already revoked. Only wipe the family after a short grace window.
+      const graceMs = 15_000;
+      const revokedAgeMs = Date.now() - stored.revokedAt.getTime();
+      if (revokedAgeMs >= graceMs) {
+        await this.prisma.refreshToken.updateMany({
+          where: { familyId: stored.familyId, revokedAt: null },
+          data: { revokedAt: new Date() },
+        });
+        this.logger.warn(
+          { familyId: stored.familyId, userId: stored.userId },
+          'auth.refresh_reuse_detected',
+        );
+      } else {
+        this.logger.warn(
+          { familyId: stored.familyId, userId: stored.userId },
+          'auth.refresh_race',
+        );
+      }
+      throw new AppError(
+        ErrorCodes.AUTH_REFRESH_REUSED,
+        'Session revoked. Please sign in again.',
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+
+    if (stored.expiresAt < new Date()) {
+      await this.prisma.refreshToken.update({
+        where: { id: stored.id },
+        data: { revokedAt: new Date() },
+      });
+      throw new AppError(
+        ErrorCodes.AUTH_INVALID_SESSION,
+        'Session expired. Please sign in again.',
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+
+    this.assertAccountEligible(stored.user.status);
+
+    // Atomic claim — concurrent refresh with the same token yields one winner.
+    const claimed = await this.prisma.refreshToken.updateMany({
+      where: { id: stored.id, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+    if (claimed.count !== 1) {
+      // Lost the race to another in-flight refresh — do NOT revoke the winner's family.
+      throw new AppError(
+        ErrorCodes.AUTH_REFRESH_REUSED,
+        'Session revoked. Please sign in again.',
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+
+    this.logger.log({ userId: stored.userId }, 'auth.refresh');
     return this.issueSession(stored.user.id, stored.user.role, stored.familyId);
   }
 
@@ -134,44 +193,45 @@ export class AuthService {
       where: { familyId: stored.familyId, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+    this.logger.log({ userId: stored.userId }, 'auth.logout');
   }
 
+  /**
+   * Legacy email OTP — not the product path. Kept for compatibility.
+   * Responses avoid revealing whether the email is registered until verify.
+   */
   async requestOtp(email: string): Promise<{ expiresInSeconds: number }> {
-    const otp = String(Math.floor(100000 + Math.random() * 900000));
+    const ttl = this.config.get('OTP_TTL_SECONDS');
+    const otp = this.generateOtp();
     const hash = hmacSha256(this.config.get('OTP_PEPPER'), otp);
     await this.redis.client.set(
-      `otp:login:${email.toLowerCase()}`,
-      hash,
+      `gmatez:otp:email:${email.toLowerCase()}`,
+      JSON.stringify({ hash, attempts: 0 } satisfies StoredOtp),
       'EX',
-      OTP_TTL_SECONDS,
+      ttl,
     );
-    if (!this.config.isProduction) {
-      this.logger.log({ email, otpPreview: '******' }, 'otp issued');
-    }
-    // In development the OTP is returned so local clients can complete the flow
-    // without an SMS provider. Production adapters send SMS/email instead.
     const exposeOtp =
-      !this.config.isProduction && process.env.OTP_EXPOSE !== 'false';
+      this.config.allowsMockProviders && process.env.OTP_EXPOSE !== 'false';
     return exposeOtp
-      ? ({ expiresInSeconds: OTP_TTL_SECONDS, otp } as {
+      ? ({ expiresInSeconds: ttl, otp } as {
           expiresInSeconds: number;
           otp?: string;
         })
-      : { expiresInSeconds: OTP_TTL_SECONDS };
+      : { expiresInSeconds: ttl };
   }
 
   async verifyOtp(email: string, otp: string) {
-    const key = `otp:login:${email.toLowerCase()}`;
-    const stored = await this.redis.client.get(key);
+    const key = `gmatez:otp:email:${email.toLowerCase()}`;
+    const stored = await this.readStoredOtp(key);
     if (!stored) {
       throw new AppError(
-        ErrorCodes.OTP_INVALID,
-        'Invalid or expired OTP',
+        ErrorCodes.OTP_EXPIRED,
+        'Code expired. Request a new one.',
         HttpStatus.UNAUTHORIZED,
       );
     }
-    const hash = hmacSha256(this.config.get('OTP_PEPPER'), otp);
-    if (!timingSafeEqualHex(stored, hash)) {
+    const hash = hmacSha256(this.config.get('OTP_PEPPER'), otp.trim());
+    if (!timingSafeEqualHex(stored.hash, hash)) {
       throw new AppError(
         ErrorCodes.OTP_INVALID,
         'Invalid or expired OTP',
@@ -182,91 +242,271 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({
       where: { email: email.toLowerCase() },
     });
-    if (!user || user.status !== UserStatus.ACTIVE) {
+    if (!user) {
       throw new AppError(
         ErrorCodes.INVALID_CREDENTIALS,
         'Invalid credentials',
         HttpStatus.UNAUTHORIZED,
       );
     }
+    this.assertAccountEligible(user.status);
     return this.issueSession(user.id, user.role);
   }
 
-  async requestPhoneOtp(phoneInput: string): Promise<{ expiresInSeconds: number }> {
-    const phone = normalizePhone(phoneInput);
-    const otp = this.demoOtp() ?? randomOtp();
+  /**
+   * Product auth path: phone OTP request.
+   * Always returns the same shape (enumeration-safe).
+   */
+  async requestPhoneOtp(
+    phoneInput: string,
+    clientIp = 'unknown',
+  ): Promise<{
+    expiresInSeconds: number;
+    resendAvailableInSeconds: number;
+  }> {
+    const phone = this.normalizePhone(phoneInput);
+    const ttl = this.config.get('OTP_TTL_SECONDS');
+    const cooldown = this.config.get('OTP_RESEND_COOLDOWN_SECONDS');
+
+    await this.rateLimit.assertAllowed({
+      key: `gmatez:ratelimit:otp:ip:${clientIp}:send`,
+      limit: this.config.get('OTP_MAX_SENDS_PER_IP_WINDOW'),
+      windowSeconds: this.config.get('OTP_SEND_WINDOW_SECONDS'),
+      code: ErrorCodes.OTP_RATE_LIMITED,
+      message: 'Please try again later.',
+    });
+    await this.rateLimit.assertAllowed({
+      key: `gmatez:ratelimit:otp:phone:${phone}:send`,
+      limit: this.config.get('OTP_MAX_SENDS_PER_WINDOW'),
+      windowSeconds: this.config.get('OTP_SEND_WINDOW_SECONDS'),
+      code: ErrorCodes.OTP_RATE_LIMITED,
+      message: 'Please try again later.',
+    });
+
+    const cooldownKey = `gmatez:otp:cooldown:${phone}`;
+    const cooled = await this.rateLimit.setNxEx(cooldownKey, '1', cooldown);
+    if (!cooled) {
+      const retryAfterSeconds = await this.rateLimit.getTtlSeconds(cooldownKey);
+      throw new AppError(
+        ErrorCodes.OTP_RESEND_COOLDOWN,
+        'Please wait before requesting another code.',
+        HttpStatus.TOO_MANY_REQUESTS,
+        { retryAfterSeconds: retryAfterSeconds || cooldown },
+      );
+    }
+
+    const otp = this.resolveOutboundOtp();
     const hash = hmacSha256(this.config.get('OTP_PEPPER'), otp);
+    const payload: StoredOtp = { hash, attempts: 0 };
     await this.redis.client.set(
-      `otp:phone:${phone}`,
-      hash,
+      `gmatez:otp:phone:${phone}`,
+      JSON.stringify(payload),
       'EX',
-      OTP_TTL_SECONDS,
+      ttl,
     );
-    this.logger.log({ phone: maskPhone(phone) }, 'phone otp issued');
-    return { expiresInSeconds: OTP_TTL_SECONDS };
+
+    try {
+      await this.otpDelivery.sendOtp({ phoneE164: phone, otp });
+    } catch (error) {
+      await this.redis.client.del(`gmatez:otp:phone:${phone}`);
+      await this.redis.client.del(cooldownKey);
+      throw error;
+    }
+
+    this.logger.log(
+      { phone: maskPhone(phone), provider: this.otpDelivery.name },
+      'otp.requested',
+    );
+
+    return {
+      expiresInSeconds: ttl,
+      resendAvailableInSeconds: cooldown,
+    };
   }
 
-  async verifyPhoneOtp(phoneInput: string, otp: string) {
-    const phone = normalizePhone(phoneInput);
-    const key = `otp:phone:${phone}`;
-    const stored = await this.redis.client.get(key);
+  async verifyPhoneOtp(phoneInput: string, otp: string, clientIp = 'unknown') {
+    const phone = this.normalizePhone(phoneInput);
+
+    await this.rateLimit.assertAllowed({
+      key: `gmatez:ratelimit:otp:ip:${clientIp}:verify`,
+      limit: this.config.get('OTP_MAX_VERIFY_PER_WINDOW'),
+      windowSeconds: this.config.get('OTP_VERIFY_WINDOW_SECONDS'),
+      code: ErrorCodes.OTP_RATE_LIMITED,
+      message: 'Please try again later.',
+    });
+    await this.rateLimit.assertAllowed({
+      key: `gmatez:ratelimit:otp:phone:${phone}:verify`,
+      limit: this.config.get('OTP_MAX_VERIFY_PER_WINDOW'),
+      windowSeconds: this.config.get('OTP_VERIFY_WINDOW_SECONDS'),
+      code: ErrorCodes.OTP_RATE_LIMITED,
+      message: 'Please try again later.',
+    });
+
+    const key = `gmatez:otp:phone:${phone}`;
+    const stored = await this.readStoredOtp(key);
+    if (!stored) {
+      throw new AppError(
+        ErrorCodes.OTP_EXPIRED,
+        'Code expired. Request a new one.',
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+
+    const maxAttempts = this.config.get('OTP_MAX_ATTEMPTS');
+    if (stored.attempts >= maxAttempts) {
+      await this.redis.client.del(key);
+      throw new AppError(
+        ErrorCodes.OTP_TOO_MANY_ATTEMPTS,
+        'Too many incorrect codes. Request a new one.',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
     const hash = hmacSha256(this.config.get('OTP_PEPPER'), otp.trim());
-    if (!stored || !timingSafeEqualHex(stored, hash)) {
+    if (!timingSafeEqualHex(stored.hash, hash)) {
+      const nextAttempts = stored.attempts + 1;
+      const ttl = await this.redis.client.ttl(key);
+      if (nextAttempts >= maxAttempts) {
+        await this.redis.client.del(key);
+        throw new AppError(
+          ErrorCodes.OTP_TOO_MANY_ATTEMPTS,
+          'Too many incorrect codes. Request a new one.',
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+      await this.redis.client.set(
+        key,
+        JSON.stringify({
+          hash: stored.hash,
+          attempts: nextAttempts,
+        } satisfies StoredOtp),
+        'EX',
+        ttl > 0 ? ttl : this.config.get('OTP_TTL_SECONDS'),
+      );
       throw new AppError(
         ErrorCodes.OTP_INVALID,
         'Invalid or expired OTP',
         HttpStatus.UNAUTHORIZED,
       );
     }
+
+    // One-time use
     await this.redis.client.del(key);
+    await this.redis.client.del(`gmatez:otp:cooldown:${phone}`);
 
     const existing = await this.prisma.user.findUnique({ where: { phone } });
     if (existing) {
-      if (existing.status === UserStatus.SUSPENDED) {
-        throw new AppError(
-          ErrorCodes.USER_SUSPENDED,
-          'Account is suspended',
-          HttpStatus.FORBIDDEN,
-        );
-      }
-      if (existing.status !== UserStatus.ACTIVE) {
-        throw new AppError(
-          ErrorCodes.INVALID_CREDENTIALS,
-          'Invalid credentials',
-          HttpStatus.UNAUTHORIZED,
-        );
-      }
+      this.assertAccountEligible(existing.status);
+      this.logger.log({ userId: existing.id }, 'otp.verified');
       return this.issueSession(existing.id, existing.role);
     }
 
-    const passwordHash = await argon2.hash(randomToken(24), {
-      type: argon2.argon2id,
-    });
-    const digits = phone.replace(/\D/g, '');
-    const user = await this.prisma.user.create({
-      data: {
-        email: `p${digits}@phone.gmatez.invalid`,
-        phone,
-        passwordHash,
-        profile: {
-          create: { displayName: `User ${digits.slice(-4)}` },
+    try {
+      const passwordHash = await argon2.hash(randomToken(24), {
+        type: argon2.argon2id,
+      });
+      const digits = phone.replace(/\D/g, '');
+      const user = await this.prisma.user.create({
+        data: {
+          email: `p${digits}@phone.gmatez.invalid`,
+          phone,
+          passwordHash,
+          profile: {
+            create: { displayName: `User ${digits.slice(-4)}` },
+          },
+          wallet: { create: {} },
         },
-        wallet: { create: {} },
-      },
-    });
-    this.logger.log({ userId: user.id }, 'phone user created');
-    return this.issueSession(user.id, user.role);
+      });
+      this.logger.log({ userId: user.id }, 'otp.verified');
+      return this.issueSession(user.id, user.role);
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === 'P2002') {
+        // Concurrent first-time verify — load winner and continue.
+        const raced = await this.prisma.user.findUnique({ where: { phone } });
+        if (raced) {
+          this.assertAccountEligible(raced.status);
+          return this.issueSession(raced.id, raced.role);
+        }
+      }
+      throw error;
+    }
   }
 
-  private demoOtp(): string | null {
-    const configured = process.env.MOCK_OTP?.trim();
-    if (configured && /^\d{6}$/.test(configured)) {
-      return configured;
+  private assertAccountEligible(status: UserStatus): void {
+    if (status === UserStatus.SUSPENDED) {
+      throw new AppError(
+        ErrorCodes.ACCOUNT_SUSPENDED,
+        'Account is suspended',
+        HttpStatus.FORBIDDEN,
+      );
     }
-    if (process.env.ALLOW_MOCK_PROVIDERS === 'true') {
-      return '123456';
+    if (status === UserStatus.DELETED) {
+      throw new AppError(
+        ErrorCodes.ACCOUNT_DELETED,
+        'Account is unavailable',
+        HttpStatus.UNAUTHORIZED,
+      );
     }
-    return null;
+    if (status !== UserStatus.ACTIVE) {
+      throw new AppError(
+        ErrorCodes.INVALID_CREDENTIALS,
+        'Invalid credentials',
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
+  }
+
+  private normalizePhone(input: string): string {
+    return normalizePhoneE164(
+      input,
+      this.config.get('SUPPORTED_PHONE_REGIONS'),
+      this.config.get('DEFAULT_PHONE_REGION'),
+    );
+  }
+
+  private generateOtp(): string {
+    const length = this.config.get('OTP_LENGTH');
+    const min = 10 ** (length - 1);
+    const max = 10 ** length;
+    return String(randomInt(min, max));
+  }
+
+  private resolveOutboundOtp(): string {
+    if (
+      this.config.get('OTP_PROVIDER') === 'mock' &&
+      this.config.allowsMockProviders
+    ) {
+      const length = this.config.get('OTP_LENGTH');
+      const configured = this.config.get('MOCK_OTP')?.trim();
+      if (configured && new RegExp(`^\\d{${length}}$`).test(configured)) {
+        return configured;
+      }
+      if (length === 6) {
+        return '123456';
+      }
+    }
+    return this.generateOtp();
+  }
+
+  private async readStoredOtp(key: string): Promise<StoredOtp | null> {
+    const raw = await this.redis.client.get(key);
+    if (!raw) {
+      return null;
+    }
+    try {
+      // Backward compatible: plain hash string from older keys
+      if (!raw.startsWith('{')) {
+        return { hash: raw, attempts: 0 };
+      }
+      const parsed = JSON.parse(raw) as StoredOtp;
+      if (!parsed.hash) {
+        return null;
+      }
+      return { hash: parsed.hash, attempts: parsed.attempts ?? 0 };
+    } catch {
+      return null;
+    }
   }
 
   private async issueSession(
@@ -301,36 +541,6 @@ export class AuthService {
       expiresIn: this.config.get('JWT_ACCESS_TTL'),
     };
   }
-}
-
-function randomOtp(): string {
-  return String(Math.floor(100000 + Math.random() * 900000));
-}
-
-function normalizePhone(input: string): string {
-  const compact = input.replace(/[\s()-]/g, '');
-  const phone = compact.startsWith('+')
-    ? `+${compact.slice(1).replace(/\D/g, '')}`
-    : compact.replace(/\D/g, '');
-  const withCountry = phone.startsWith('+')
-    ? phone
-    : phone.length === 10
-      ? `+91${phone}`
-      : phone.startsWith('91') && phone.length === 12
-        ? `+${phone}`
-        : '';
-  if (!/^\+[1-9]\d{7,14}$/.test(withCountry)) {
-    throw new AppError(
-      ErrorCodes.VALIDATION_FAILED,
-      'Enter a valid phone number',
-      HttpStatus.BAD_REQUEST,
-    );
-  }
-  return withCountry;
-}
-
-function maskPhone(phone: string): string {
-  return `${phone.slice(0, 3)}******${phone.slice(-2)}`;
 }
 
 function parseDurationMs(ttl: string): number {

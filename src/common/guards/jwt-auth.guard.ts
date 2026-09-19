@@ -63,14 +63,14 @@ export class JwtAuthGuard implements CanActivate {
     });
     if (!user || user.status === 'DELETED') {
       throw new AppError(
-        ErrorCodes.UNAUTHENTICATED,
+        ErrorCodes.ACCOUNT_DELETED,
         'Authentication required',
         401,
       );
     }
     if (user.status === 'SUSPENDED') {
       throw new AppError(
-        ErrorCodes.USER_SUSPENDED,
+        ErrorCodes.ACCOUNT_SUSPENDED,
         'Account is suspended',
         403,
       );

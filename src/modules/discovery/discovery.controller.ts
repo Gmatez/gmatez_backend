@@ -1,4 +1,4 @@
-import { Controller, Get, Param, ParseUUIDPipe, Query } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiPropertyOptional, ApiTags } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
@@ -28,7 +28,12 @@ export class DiscoveryFeedQueryDto extends CursorPaginationQueryDto {
     if (value === true || value === 'true' || value === '1') {
       return true;
     }
-    if (value === false || value === 'false' || value === '0' || value == null) {
+    if (
+      value === false ||
+      value === 'false' ||
+      value === '0' ||
+      value == null
+    ) {
       return false;
     }
     return value;

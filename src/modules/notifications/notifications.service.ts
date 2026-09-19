@@ -72,7 +72,16 @@ export class NotificationsService implements OnModuleInit {
       body: string;
       data?: Record<string, string>;
     },
+    opts?: { jobId?: string },
   ) {
+    const prefs = await this.getPreferences(userId);
+    if (!this.isCategoryEnabled(prefs, input.type)) {
+      this.logger.debug(
+        { userId, type: input.type },
+        'notification.suppressed_by_preference',
+      );
+      return null;
+    }
     const notification = await this.prisma.appNotification.create({
       data: {
         userId,
@@ -82,13 +91,18 @@ export class NotificationsService implements OnModuleInit {
         data: input.data,
       },
     });
-    await this.queue.enqueue(this.queue.notifications, 'push', {
-      userId,
-      title: input.title,
-      body: input.body,
-      data: input.data,
-      notificationId: notification.id,
-    });
+    await this.queue.enqueue(
+      this.queue.notifications,
+      'push',
+      {
+        userId,
+        title: input.title,
+        body: input.body,
+        data: input.data,
+        notificationId: notification.id,
+      },
+      opts?.jobId ? { jobId: opts.jobId } : undefined,
+    );
     this.realtime.emitToUser(userId, 'notification.received', {
       id: notification.id,
       type: notification.type,
@@ -98,6 +112,100 @@ export class NotificationsService implements OnModuleInit {
       createdAt: notification.createdAt,
     });
     return notification;
+  }
+
+  async getPreferences(userId: string) {
+    const existing = await this.prisma.notificationPreference.findUnique({
+      where: { userId },
+    });
+    if (existing) {
+      return existing;
+    }
+    return this.prisma.notificationPreference.create({
+      data: { userId },
+    });
+  }
+
+  async updatePreferences(
+    userId: string,
+    patch: Partial<{
+      incomingCall: boolean;
+      chatMessage: boolean;
+      payment: boolean;
+      wallet: boolean;
+      host: boolean;
+      payout: boolean;
+      system: boolean;
+    }>,
+  ) {
+    await this.getPreferences(userId);
+    return this.prisma.notificationPreference.update({
+      where: { userId },
+      data: patch,
+    });
+  }
+
+  private isCategoryEnabled(
+    prefs: {
+      incomingCall: boolean;
+      chatMessage: boolean;
+      payment: boolean;
+      wallet: boolean;
+      host: boolean;
+      payout: boolean;
+      system: boolean;
+    },
+    type: string,
+  ): boolean {
+    const t = type.toLowerCase();
+    if (t.includes('call') || t === 'incoming_call') {
+      return prefs.incomingCall;
+    }
+    if (t.includes('chat') || t === 'chat_message') {
+      return prefs.chatMessage;
+    }
+    if (t.includes('payment')) {
+      return prefs.payment;
+    }
+    if (t.includes('wallet')) {
+      return prefs.wallet;
+    }
+    if (t.includes('host')) {
+      return prefs.host;
+    }
+    if (t.includes('payout')) {
+      return prefs.payout;
+    }
+    return prefs.system;
+  }
+
+  /**
+   * Chat push hook. Job id is keyed by messageId so retries do not duplicate pushes.
+   * Does not include message body content in the push data payload.
+   */
+  async notifyChatMessage(input: {
+    userId: string;
+    messageId: string;
+    conversationId: string;
+    senderId: string;
+    title: string;
+    body: string;
+  }) {
+    return this.notifyUser(
+      input.userId,
+      {
+        type: 'CHAT_MESSAGE',
+        title: input.title,
+        body: input.body,
+        data: {
+          type: 'CHAT_MESSAGE',
+          conversationId: input.conversationId,
+          messageId: input.messageId,
+          senderId: input.senderId,
+        },
+      },
+      { jobId: `chat-message:${input.messageId}` },
+    );
   }
 
   async markRead(userId: string, notificationId: string) {

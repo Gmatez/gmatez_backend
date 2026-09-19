@@ -41,7 +41,10 @@ export class DiscoveryService {
   search(viewerId: string, query: DiscoveryQuery) {
     const q = query.q?.trim() ?? '';
     if (q.length < 2) {
-      return { items: [], nextCursor: null } satisfies CursorPage<DiscoveryItem>;
+      return {
+        items: [],
+        nextCursor: null,
+      } satisfies CursorPage<DiscoveryItem>;
     }
     return this.page(viewerId, { ...query, q });
   }
@@ -55,7 +58,11 @@ export class DiscoveryService {
     let cursor = query.cursor;
     let nextCursor: string | null = null;
 
-    for (let attempt = 0; attempt < 5 && items.length < query.limit; attempt += 1) {
+    for (
+      let attempt = 0;
+      attempt < 5 && items.length < query.limit;
+      attempt += 1
+    ) {
       const { rows, hasMore } = await this.fetchPage({
         viewerId,
         excluded,
@@ -113,6 +120,7 @@ export class DiscoveryService {
     const rows = await this.prisma.profile.findMany({
       where: {
         userId: { notIn: [input.viewerId, ...input.excluded] },
+        isDiscoverable: true,
         user: {
           status: 'ACTIVE',
           hostProfile: {

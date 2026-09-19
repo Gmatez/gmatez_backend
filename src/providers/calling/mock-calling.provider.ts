@@ -7,6 +7,12 @@ import {
   CallingProvider,
   CallingSession,
 } from './calling-provider';
+import {
+  RTC_UID_CALLEE,
+  RTC_UID_CALLER,
+  rtcChannelName,
+  rtcUidForUser,
+} from './rtc-identity';
 
 @Injectable()
 export class MockCallingProvider implements CallingProvider {
@@ -19,11 +25,38 @@ export class MockCallingProvider implements CallingProvider {
     callerId: string;
     calleeId: string;
   }): Promise<CallingSession> {
-    const sessionId = `mock_${input.callId}`;
+    const channelName = rtcChannelName(input.callId);
+    const tokenExpiresAt = new Date(Date.now() + 3600_000).toISOString();
     return {
-      sessionId,
+      sessionId: `mock_${input.callId}`,
+      channelName,
+      appId: 'mock-app-id',
+      callerUid: RTC_UID_CALLER,
+      calleeUid: RTC_UID_CALLEE,
       callerToken: `caller.${input.callerId}.${input.callId}`,
       calleeToken: `callee.${input.calleeId}.${input.callId}`,
+      tokenExpiresAt,
+    };
+  }
+
+  async issueParticipantToken(input: {
+    callId: string;
+    callerId: string;
+    calleeId: string;
+    userId: string;
+  }) {
+    const uid = rtcUidForUser({
+      userId: input.userId,
+      callerId: input.callerId,
+      calleeId: input.calleeId,
+    });
+    const role = uid === RTC_UID_CALLER ? 'caller' : 'callee';
+    return {
+      appId: 'mock-app-id',
+      channelName: rtcChannelName(input.callId),
+      uid,
+      token: `${role}.${input.userId}.${input.callId}`,
+      tokenExpiresAt: new Date(Date.now() + 3600_000).toISOString(),
     };
   }
 

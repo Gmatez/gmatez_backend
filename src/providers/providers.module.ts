@@ -12,16 +12,28 @@ import { PUSH_PROVIDER } from './messaging/push.tokens';
 import type { PushProvider } from './messaging/push-provider';
 import { MockPushProvider } from './messaging/mock-push.provider';
 import { FcmPushProvider } from './messaging/fcm-push.provider';
+import {
+  OTP_DELIVERY_PROVIDER,
+  type OtpDeliveryProvider,
+} from './otp/otp-delivery-provider';
+import { MockOtpDeliveryProvider } from './otp/mock-otp.provider';
+import { Msg91OtpDeliveryProvider } from './otp/msg91-otp.provider';
+import { TwilioOtpDeliveryProvider } from './otp/twilio-otp.provider';
+import { RateLimitService } from '../common/rate-limit/rate-limit.service';
 
 @Global()
 @Module({
   providers: [
+    RateLimitService,
     MockCallingProvider,
     AgoraCallingProvider,
     MockPaymentProvider,
     StripePaymentProvider,
     MockPushProvider,
     FcmPushProvider,
+    MockOtpDeliveryProvider,
+    Msg91OtpDeliveryProvider,
+    TwilioOtpDeliveryProvider,
     {
       provide: CALLING_PROVIDER,
       useFactory: (
@@ -51,11 +63,33 @@ import { FcmPushProvider } from './messaging/fcm-push.provider';
       ): PushProvider => (config.get('PUSH_PROVIDER') === 'fcm' ? fcm : mock),
       inject: [AppConfigService, MockPushProvider, FcmPushProvider],
     },
+    {
+      provide: OTP_DELIVERY_PROVIDER,
+      useFactory: (
+        config: AppConfigService,
+        mock: MockOtpDeliveryProvider,
+        msg91: Msg91OtpDeliveryProvider,
+        twilio: TwilioOtpDeliveryProvider,
+      ): OtpDeliveryProvider => {
+        if (config.get('OTP_PROVIDER') !== 'sms') {
+          return mock;
+        }
+        return config.get('SMS_PROVIDER') === 'twilio' ? twilio : msg91;
+      },
+      inject: [
+        AppConfigService,
+        MockOtpDeliveryProvider,
+        Msg91OtpDeliveryProvider,
+        TwilioOtpDeliveryProvider,
+      ],
+    },
   ],
   exports: [
+    RateLimitService,
     CALLING_PROVIDER,
     PAYMENT_PROVIDER,
     PUSH_PROVIDER,
+    OTP_DELIVERY_PROVIDER,
     MockCallingProvider,
     MockPaymentProvider,
   ],

@@ -110,6 +110,14 @@ enum HostAvailability {
   PAUSED
 }
 
+/// Admin/manual verification. External KYC provider is CONFIG_REQUIRED.
+enum HostVerificationStatus {
+  NOT_REQUIRED
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
 model User {
   id           String     @id @default(uuid())
   email        String     @unique
@@ -138,7 +146,9 @@ model User {
   conversationsB  Conversation[]     @relation("ConversationB")
   messagesSent    Message[]
   payoutRequests  PayoutRequest[]
+  payoutDestinations PayoutDestination[]
   hostProfile     HostProfile?
+  notificationPreferences NotificationPreference?
 
   @@index([status, createdAt])
 }
@@ -181,27 +191,47 @@ model Profile {
 }
 
 model HostProfile {
-  userId                    String           @id
-  status                    HostStatus       @default(PENDING_REVIEW)
-  availability              HostAvailability @default(OFFLINE)
-  voiceEnabled              Boolean          @default(true)
-  videoEnabled              Boolean          @default(true)
-  voiceRatePerMinuteCents   Int              @default(100)
-  videoRatePerMinuteCents   Int              @default(150)
-  languages                 String[]         @default([])
-  interests                 String[]         @default([])
-  applicationBio            String           @default("")
+  userId                    String                 @id
+  status                    HostStatus             @default(PENDING_REVIEW)
+  availability              HostAvailability       @default(OFFLINE)
+  verificationStatus        HostVerificationStatus @default(NOT_REQUIRED)
+  voiceEnabled              Boolean                @default(true)
+  videoEnabled              Boolean                @default(true)
+  voiceRatePerMinuteCents   Int                    @default(100)
+  videoRatePerMinuteCents   Int                    @default(150)
+  languages                 String[]               @default([])
+  interests                 String[]               @default([])
+  applicationBio            String                 @default("")
+  /// Host-facing review / rejection message (safe to show the applicant).
   reviewNote                String?
-  submittedAt               DateTime         @default(now())
+  /// Internal admin moderation note — never returned on host/public APIs.
+  internalNote              String?
+  submittedAt               DateTime               @default(now())
   reviewedAt                DateTime?
   reviewedById              String?
-  createdAt                 DateTime         @default(now())
-  updatedAt                 DateTime         @updatedAt
+  createdAt                 DateTime               @default(now())
+  updatedAt                 DateTime               @updatedAt
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                 User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agreementAcceptances HostAgreementAcceptance[]
 
   @@index([status, availability])
   @@index([status, updatedAt])
+  @@index([status, verificationStatus])
+}
+
+/// Versioned mandatory agreement acceptances for host eligibility.
+model HostAgreementAcceptance {
+  id            String   @id @default(uuid())
+  userId        String
+  agreementType String
+  version       String
+  acceptedAt    DateTime @default(now())
+
+  host HostProfile @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@unique([userId, agreementType, version])
+  @@index([userId, agreementType])
 }
 
 model Wallet {
@@ -277,10 +307,14 @@ model Call {
   version              Int        @default(0)
   provider             String
   providerSessionId    String     @unique
+  /// Client create idempotency. Unique when set — retries return the same call.
+  idempotencyKey       String?    @unique
   ratePerMinuteCents   Int
   billedSeconds        Int        @default(0)
   billedAmountCents    Int        @default(0)
   heldAmountCents      Int        @default(0)
+  /// Set when settle() successfully applies ledger charge (idempotent).
+  settlementAppliedAt  DateTime?
   connectedAt          DateTime?
   endedAt              DateTime?
   endReason            String?
@@ -327,20 +361,24 @@ model Block {
 }
 
 model Report {
-  id         String       @id @default(uuid())
-  reporterId String
-  reportedId String
-  reason     ReportReason
-  details    String       @default("")
-  status     ReportStatus @default(OPEN)
-  createdAt  DateTime     @default(now())
-  updatedAt  DateTime     @updatedAt
+  id            String       @id @default(uuid())
+  reporterId    String
+  reportedId    String
+  reason        ReportReason
+  details       String       @default("")
+  status        ReportStatus @default(OPEN)
+  /// Optional linked resource: call | conversation | message
+  referenceType String?
+  referenceId   String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
 
   reporter User @relation("Reporter", fields: [reporterId], references: [id], onDelete: Restrict)
   reported User @relation("Reported", fields: [reportedId], references: [id], onDelete: Restrict)
 
   @@index([reportedId, status, createdAt])
   @@index([reporterId, createdAt])
+  @@index([referenceType, referenceId])
 }
 
 model DeviceToken {
@@ -434,9 +472,28 @@ model Message {
   @@index([senderId, createdAt])
 }
 
+model PayoutDestination {
+  id          String   @id @default(uuid())
+  userId      String
+  /// BANK | UPI | PAYPAL | OTHER — BUSINESS_RULE_REQUIRED for provider rails
+  type        String
+  label       String   @default("")
+  /// Opaque destination payload (account last4, upi handle, etc). Never log secrets.
+  detailsJson Json
+  isDefault   Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payouts PayoutRequest[]
+
+  @@index([userId, isDefault])
+}
+
 model PayoutRequest {
   id             String       @id @default(uuid())
   userId         String
+  destinationId  String?
   amountCents    Int
   status         PayoutStatus @default(REQUESTED)
   failureReason  String?
@@ -445,8 +502,24 @@ model PayoutRequest {
   updatedAt      DateTime     @updatedAt
   processedAt    DateTime?
 
-  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  user        User               @relation(fields: [userId], references: [id], onDelete: Restrict)
+  destination PayoutDestination? @relation(fields: [destinationId], references: [id], onDelete: Restrict)
 
   @@index([userId, createdAt(sort: Desc)])
   @@index([status, createdAt])
+}
+
+/// Per-user push/in-app notification preferences.
+model NotificationPreference {
+  userId             String   @id
+  incomingCall       Boolean  @default(true)
+  chatMessage        Boolean  @default(true)
+  payment            Boolean  @default(true)
+  wallet             Boolean  @default(true)
+  host               Boolean  @default(true)
+  payout             Boolean  @default(true)
+  system             Boolean  @default(true)
+  updatedAt          DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

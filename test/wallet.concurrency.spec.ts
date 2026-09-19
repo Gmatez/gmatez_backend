@@ -3,10 +3,13 @@ import { WalletService } from '../src/modules/wallet/wallet.service';
 import { prisma, resetDatabase } from './helpers';
 import { AuthService } from '../src/modules/auth/auth.service';
 import { AppModule } from '../src/app.module';
-import { INestApplication } from '@nestjs/common';
+import {
+  FastifyAdapter,
+  NestFastifyApplication,
+} from '@nestjs/platform-fastify';
 
 describe('wallet concurrency', () => {
-  let app: INestApplication;
+  let app: NestFastifyApplication;
   let wallet: WalletService;
   let auth: AuthService;
 
@@ -14,7 +17,9 @@ describe('wallet concurrency', () => {
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
-    app = moduleRef.createNestApplication();
+    app = moduleRef.createNestApplication<NestFastifyApplication>(
+      new FastifyAdapter(),
+    );
     await app.init();
     wallet = app.get(WalletService);
     auth = app.get(AuthService);

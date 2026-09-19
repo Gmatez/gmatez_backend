@@ -29,10 +29,20 @@ import {
 } from './call-state.machine';
 import { RealtimeEmitter } from '../../realtime/realtime-emitter';
 import { HostsService } from '../hosts/hosts.service';
+import { RedisService } from '../../redis/redis.service';
+import { rtcChannelName } from '../../providers/calling/rtc-identity';
+import { AppConfigService } from '../../config/app-config';
 
 const RING_TIMEOUT_MS = 45_000;
 const HEARTBEAT_STALE_MS = 45_000;
 const HOLD_SECONDS = 60;
+const RTC_JOIN_TTL_SECONDS = 60 * 60 * 6;
+
+const RTC_TOKEN_ALLOWED: CallStatus[] = [
+  CallStatus.ACCEPTED,
+  CallStatus.CONNECTING,
+  CallStatus.CONNECTED,
+];
 
 @Injectable()
 export class CallingService implements OnModuleInit {
@@ -46,6 +56,8 @@ export class CallingService implements OnModuleInit {
     private readonly queue: QueueService,
     private readonly realtime: RealtimeEmitter,
     private readonly hosts: HostsService,
+    private readonly redis: RedisService,
+    private readonly config: AppConfigService,
     @Inject(CALLING_PROVIDER) private readonly provider: CallingProvider,
   ) {}
 
@@ -69,6 +81,23 @@ export class CallingService implements OnModuleInit {
     idempotencyKey?: string,
     callType: CallType = CallType.VOICE,
   ) {
+    if (idempotencyKey && idempotencyKey.length >= 8) {
+      const prior = await this.prisma.call.findUnique({
+        where: { idempotencyKey },
+      });
+      if (prior) {
+        if (prior.callerId !== callerId) {
+          throw new AppError(
+            ErrorCodes.CONFLICT,
+            'Idempotency key already used',
+            HttpStatus.CONFLICT,
+          );
+        }
+        const payload = await this.publicCall(prior);
+        return { ...payload, idempotencyKey };
+      }
+    }
+
     if (callerId === calleeId) {
       throw new AppError(ErrorCodes.VALIDATION_FAILED, 'Cannot call yourself');
     }
@@ -117,6 +146,15 @@ export class CallingService implements OnModuleInit {
       },
     });
     if (active) {
+      if (idempotencyKey && idempotencyKey.length >= 8) {
+        const prior = await this.prisma.call.findUnique({
+          where: { idempotencyKey },
+        });
+        if (prior && prior.callerId === callerId) {
+          const payload = await this.publicCall(prior);
+          return { ...payload, idempotencyKey };
+        }
+      }
       throw new AppError(
         ErrorCodes.CALL_ALREADY_ACTIVE,
         'An active call already exists',
@@ -124,17 +162,40 @@ export class CallingService implements OnModuleInit {
       );
     }
 
-    const call = await this.prisma.call.create({
-      data: {
-        callerId,
-        calleeId,
-        callType,
-        status: CallStatus.INITIATED,
-        provider: this.provider.name,
-        providerSessionId: `pending_${crypto.randomUUID()}`,
-        ratePerMinuteCents: rate,
-      },
-    });
+    let call;
+    try {
+      call = await this.prisma.call.create({
+        data: {
+          callerId,
+          calleeId,
+          callType,
+          status: CallStatus.INITIATED,
+          provider: this.provider.name,
+          providerSessionId: `pending_${crypto.randomUUID()}`,
+          ratePerMinuteCents: rate,
+          ...(idempotencyKey && idempotencyKey.length >= 8
+            ? { idempotencyKey }
+            : {}),
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002' &&
+        idempotencyKey
+      ) {
+        const dup = await this.prisma.call.findUnique({
+          where: { idempotencyKey },
+        });
+        if (dup && dup.callerId === callerId) {
+          return {
+            ...(await this.publicCall(dup)),
+            idempotencyKey,
+          };
+        }
+      }
+      throw error;
+    }
 
     const session = await this.provider.createSession({
       callId: call.id,
@@ -168,7 +229,14 @@ export class CallingService implements OnModuleInit {
     this.realtime.emitToUser(calleeId, 'call.ringing', payload);
     return {
       ...payload,
-      callerToken: session.callerToken,
+      rtc: {
+        channelName: session.channelName,
+        appId: session.appId,
+        callerUid: session.callerUid,
+        calleeUid: session.calleeUid,
+      },
+      callerToken:
+        this.provider.name === 'mock' ? session.callerToken : undefined,
       idempotencyKey,
     };
   }
@@ -186,11 +254,6 @@ export class CallingService implements OnModuleInit {
       actorId: userId,
       source: 'api.accept',
     });
-    const session = await this.provider.createSession({
-      callId: call.id,
-      callerId: call.callerId,
-      calleeId: call.calleeId,
-    });
     let current = updated;
     if (this.provider.name === 'mock') {
       current = await this.transition(callId, CallStatus.CONNECTING, {
@@ -203,11 +266,139 @@ export class CallingService implements OnModuleInit {
         extra: { connectedAt: new Date() },
       });
       await this.onConnected(current);
+      const mockCreds = await this.provider.issueParticipantToken({
+        callId: call.id,
+        callerId: call.callerId,
+        calleeId: call.calleeId,
+        userId,
+      });
+      return {
+        ...(await this.publicCall(current)),
+        calleeToken: mockCreds.token,
+        rtc: {
+          ...mockCreds,
+          callType: call.callType,
+        },
+      };
     }
+
+    current = await this.transition(callId, CallStatus.CONNECTING, {
+      actorId: userId,
+      source: 'api.accept.rtc',
+    });
+    const rtc = await this.provider.issueParticipantToken({
+      callId: call.id,
+      callerId: call.callerId,
+      calleeId: call.calleeId,
+      userId,
+    });
     return {
       ...(await this.publicCall(current)),
-      calleeToken: session.calleeToken,
+      calleeToken: rtc.token,
+      rtc: {
+        ...rtc,
+        callType: call.callType,
+      },
     };
+  }
+
+  /**
+   * Issue / renew a short-lived RTC token. Participant + non-terminal RTC states only.
+   */
+  async issueRtcToken(callId: string, userId: string) {
+    const call = await this.getParticipantCall(callId, userId);
+    if (!RTC_TOKEN_ALLOWED.includes(call.status)) {
+      throw new AppError(
+        ErrorCodes.CALL_RTC_FORBIDDEN,
+        `RTC token not available in status ${call.status}`,
+        HttpStatus.CONFLICT,
+      );
+    }
+    const rtc = await this.provider.issueParticipantToken({
+      callId: call.id,
+      callerId: call.callerId,
+      calleeId: call.calleeId,
+      userId,
+    });
+    return {
+      callId: call.id,
+      callType: call.callType,
+      status: call.status,
+      ...rtc,
+    };
+  }
+
+  /**
+   * Client confirms Agora joinChannel success. First report drives CONNECTED + billing.
+   */
+  async markRtcJoined(callId: string, userId: string) {
+    const call = await this.getParticipantCall(callId, userId);
+    if (
+      call.status !== CallStatus.ACCEPTED &&
+      call.status !== CallStatus.CONNECTING &&
+      call.status !== CallStatus.CONNECTED
+    ) {
+      throw new AppError(
+        ErrorCodes.CALL_RTC_FORBIDDEN,
+        `Cannot join RTC in status ${call.status}`,
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    await this.redis.client.sadd(this.rtcJoinedKey(callId), userId);
+    await this.redis.client.expire(
+      this.rtcJoinedKey(callId),
+      RTC_JOIN_TTL_SECONDS,
+    );
+
+    let current = call;
+    if (call.status === CallStatus.ACCEPTED) {
+      current = await this.transition(callId, CallStatus.CONNECTING, {
+        actorId: userId,
+        source: 'api.rtc-joined',
+      });
+    }
+    if (current.status === CallStatus.CONNECTING) {
+      current = await this.transition(callId, CallStatus.CONNECTED, {
+        actorId: userId,
+        source: 'api.rtc-joined',
+        extra: { connectedAt: new Date() },
+      });
+      await this.onConnected(current);
+    }
+    return this.publicCall(current);
+  }
+
+  async reportRtcFailed(callId: string, userId: string, reason?: string) {
+    const call = await this.getParticipantCall(callId, userId);
+    if (isTerminal(call.status)) {
+      return this.publicCall(call);
+    }
+    if (
+      call.status === CallStatus.CONNECTED ||
+      call.status === CallStatus.CONNECTING ||
+      call.status === CallStatus.ACCEPTED
+    ) {
+      const updated = await this.transition(callId, CallStatus.FAILED, {
+        actorId: userId,
+        source: 'api.rtc-failed',
+        extra: {
+          endedAt: new Date(),
+          endReason: reason?.slice(0, 120) || 'rtc_failed',
+        },
+      });
+      await this.settle(updated);
+      return this.publicCall(updated);
+    }
+    throw new AppError(
+      ErrorCodes.CALL_RTC_FORBIDDEN,
+      `Cannot fail RTC from ${call.status}`,
+      HttpStatus.CONFLICT,
+    );
+  }
+
+  private rtcJoinedKey(callId: string): string {
+    return `call:${callId}:rtc-joined`;
   }
 
   async reject(callId: string, userId: string) {
@@ -255,7 +446,10 @@ export class CallingService implements OnModuleInit {
         extra: { endedAt: new Date() },
       });
       await this.settle(ended);
-      return ended;
+      const settled = await this.prisma.call.findUniqueOrThrow({
+        where: { id: callId },
+      });
+      return this.publicCall(settled);
     }
     if (canTransition(call.status, target)) {
       const updated = await this.transition(callId, target, {
@@ -263,10 +457,10 @@ export class CallingService implements OnModuleInit {
         source: 'api.end',
       });
       await this.wallet.releaseHold(call.callerId, call.id);
-      return updated;
+      return this.publicCall(updated);
     }
     if (isTerminal(call.status)) {
-      return call;
+      return this.publicCall(call);
     }
     throw new AppError(
       ErrorCodes.CALL_INVALID_TRANSITION,
@@ -285,19 +479,35 @@ export class CallingService implements OnModuleInit {
   }
 
   async getOwn(callId: string, userId: string) {
-    return this.publicCall(await this.getParticipantCall(callId, userId));
+    return this.publicCall(
+      await this.getParticipantCall(callId, userId),
+      userId,
+    );
   }
 
   async listHistory(
     userId: string,
     limit: number,
     cursor?: string,
+    filters?: {
+      status?: CallStatus;
+      callType?: CallType;
+      role?: 'caller' | 'callee';
+    },
   ): Promise<CursorPage<Awaited<ReturnType<CallingService['presentCall']>>>> {
     const cursorFilter = cursor ? decodeCursor(cursor) : undefined;
+    const roleFilter =
+      filters?.role === 'caller'
+        ? { callerId: userId }
+        : filters?.role === 'callee'
+          ? { calleeId: userId }
+          : { OR: [{ callerId: userId }, { calleeId: userId }] };
     const rows = await this.prisma.call.findMany({
       where: {
         AND: [
-          { OR: [{ callerId: userId }, { calleeId: userId }] },
+          roleFilter,
+          ...(filters?.status ? [{ status: filters.status }] : []),
+          ...(filters?.callType ? [{ callType: filters.callType }] : []),
           cursorFilter
             ? {
                 OR: [
@@ -319,7 +529,7 @@ export class CallingService implements OnModuleInit {
     const last = items[items.length - 1];
     const profiles = await this.profilesForCalls(items);
     return {
-      items: items.map((call) => this.presentCall(call, profiles)),
+      items: items.map((call) => this.presentCall(call, profiles, userId)),
       nextCursor:
         hasMore && last ? encodeCursor(last.createdAt, last.id) : null,
     };
@@ -489,6 +699,9 @@ export class CallingService implements OnModuleInit {
     if (!fresh) {
       return;
     }
+    if (fresh.settlementAppliedAt) {
+      return;
+    }
     if (!fresh.connectedAt || !fresh.endedAt) {
       await this.wallet.releaseHold(fresh.callerId, fresh.id);
       return;
@@ -501,9 +714,10 @@ export class CallingService implements OnModuleInit {
       fresh.ratePerMinuteCents,
       billedSeconds,
     );
+    const creatorShareBps = this.config.get('CREATOR_SHARE_BPS');
     await this.prisma.call.update({
       where: { id: call.id },
-      data: { billedSeconds },
+      data: { billedSeconds, billedAmountCents: amount },
     });
     await this.wallet.settleCallCharge({
       userId: fresh.callerId,
@@ -511,7 +725,7 @@ export class CallingService implements OnModuleInit {
       amountCents: amount,
       idempotencyKey: `call:${call.id}:charge`,
     });
-    const earningCents = computeCreatorEarningCents(amount);
+    const earningCents = computeCreatorEarningCents(amount, creatorShareBps);
     if (earningCents > 0) {
       await this.wallet.applyLedger({
         userId: fresh.calleeId,
@@ -521,8 +735,16 @@ export class CallingService implements OnModuleInit {
         idempotencyKey: `call:${call.id}:earning`,
         referenceType: 'call',
         referenceId: fresh.id,
+        metadata: {
+          creatorShareBps,
+          platformFeeCents: amount - earningCents,
+        },
       });
     }
+    await this.prisma.call.update({
+      where: { id: call.id },
+      data: { settlementAppliedAt: new Date() },
+    });
     await this.provider.expireSession(fresh.providerSessionId);
     const callerWallet = await this.wallet.getByUserId(fresh.callerId);
     const calleeWallet = await this.wallet.getByUserId(fresh.calleeId);
@@ -541,7 +763,66 @@ export class CallingService implements OnModuleInit {
       billedSeconds,
       amountCents: amount,
       earningCents,
+      creatorShareBps,
     });
+  }
+
+  /**
+   * Idempotent admin/support refund of a settled call charge.
+   * Reverses caller charge and host earning when present.
+   */
+  async refundSettledCall(actorId: string, callId: string, reason?: string) {
+    const call = await this.prisma.call.findUnique({ where: { id: callId } });
+    if (!call) {
+      throw new AppError(
+        ErrorCodes.NOT_FOUND,
+        'Call not found',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    if (!call.settlementAppliedAt || call.billedAmountCents <= 0) {
+      throw new AppError(
+        ErrorCodes.VALIDATION_FAILED,
+        'Call has no billable settlement to refund',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
+    const amount = call.billedAmountCents;
+    const creatorShareBps = this.config.get('CREATOR_SHARE_BPS');
+    const earningCents = computeCreatorEarningCents(amount, creatorShareBps);
+
+    await this.wallet.applyLedger({
+      userId: call.callerId,
+      type: 'CREDIT',
+      reason: 'CALL_REFUND',
+      amountCents: amount,
+      idempotencyKey: `call:${call.id}:refund`,
+      referenceType: 'call',
+      referenceId: call.id,
+      metadata: { reason: reason ?? 'admin_refund', actorId },
+    });
+    if (earningCents > 0) {
+      await this.wallet.applyLedger({
+        userId: call.calleeId,
+        type: 'DEBIT',
+        reason: 'ADMIN_ADJUSTMENT',
+        amountCents: earningCents,
+        idempotencyKey: `call:${call.id}:earning:reverse`,
+        referenceType: 'call',
+        referenceId: call.id,
+        metadata: { reversalOf: 'CREATOR_EARNING', actorId },
+      });
+    }
+    await this.prisma.auditLog.create({
+      data: {
+        actorId,
+        action: 'call.refund',
+        targetType: 'call',
+        targetId: callId,
+        metadata: { amountCents: amount, earningReversed: earningCents },
+      },
+    });
+    return this.publicCall(call);
   }
 
   private mapProviderEvent(
@@ -675,19 +956,35 @@ export class CallingService implements OnModuleInit {
     return next;
   }
 
-  async publicCall(call: Call) {
-    return this.presentCall(call, await this.profilesForCalls([call]));
+  async publicCall(call: Call, viewerId?: string) {
+    return this.presentCall(
+      call,
+      await this.profilesForCalls([call]),
+      viewerId,
+    );
   }
 
   presentCall(
     call: Call,
-    profiles: Map<
-      string,
-      { displayName: string; avatarUrl: string | null }
-    >,
+    profiles: Map<string, { displayName: string; avatarUrl: string | null }>,
+    viewerId?: string,
   ) {
     const caller = profiles.get(call.callerId);
     const callee = profiles.get(call.calleeId);
+    const creatorShareBps = this.config.get('CREATOR_SHARE_BPS');
+    const creatorEarningCents = call.billedAmountCents
+      ? computeCreatorEarningCents(call.billedAmountCents, creatorShareBps)
+      : 0;
+    const platformFeeCents = Math.max(
+      0,
+      call.billedAmountCents - creatorEarningCents,
+    );
+    const direction =
+      viewerId === call.callerId
+        ? 'outgoing'
+        : viewerId === call.calleeId
+          ? 'incoming'
+          : undefined;
     return {
       id: call.id,
       callId: call.id,
@@ -699,11 +996,17 @@ export class CallingService implements OnModuleInit {
       calleeAvatarUrl: callee?.avatarUrl ?? null,
       callType: call.callType,
       status: call.status,
+      settlementStatus: this.settlementStatusFor(call),
       provider: call.provider,
       providerSessionId: call.providerSessionId,
+      rtcChannelName: rtcChannelName(call.id),
       ratePerMinuteCents: call.ratePerMinuteCents,
       billedSeconds: call.billedSeconds,
       billedAmountCents: call.billedAmountCents,
+      creatorEarningCents,
+      platformFeeCents,
+      creatorShareBps,
+      direction,
       connectedAt: call.connectedAt,
       endedAt: call.endedAt,
       endReason: call.endReason,
@@ -711,12 +1014,38 @@ export class CallingService implements OnModuleInit {
     };
   }
 
+  /**
+   * Derived settlement contract (no separate DB enum in Phase 1).
+   * PENDING — call still in progress or billable end not finished
+   * SETTLED — ENDED after CONNECTED with settlement applied (incl. $0 duration)
+   * NOT_APPLICABLE — never reached CONNECTED (reject/cancel/timeout/fail)
+   * REFUNDED — charge reversed via CALL_REFUND (still SETTLED historically; clients may check ledger)
+   */
+  settlementStatusFor(call: Call): 'PENDING' | 'SETTLED' | 'NOT_APPLICABLE' {
+    const terminalNonBillable = [
+      'REJECTED',
+      'CANCELLED',
+      'TIMEOUT',
+      'FAILED',
+    ] as const;
+    if ((terminalNonBillable as readonly string[]).includes(call.status)) {
+      return 'NOT_APPLICABLE';
+    }
+    if (call.status === 'ENDED') {
+      return call.connectedAt ? 'SETTLED' : 'NOT_APPLICABLE';
+    }
+    return 'PENDING';
+  }
+
   private async profilesForCalls(calls: Call[]) {
     const ids = [
       ...new Set(calls.flatMap((call) => [call.callerId, call.calleeId])),
     ];
     if (ids.length === 0) {
-      return new Map<string, { displayName: string; avatarUrl: string | null }>();
+      return new Map<
+        string,
+        { displayName: string; avatarUrl: string | null }
+      >();
     }
     const rows = await this.prisma.profile.findMany({
       where: { userId: { in: ids } },

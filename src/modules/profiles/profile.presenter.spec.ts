@@ -1,4 +1,8 @@
-import { toDiscoveryItem, toOwnProfile, toPublicProfile } from './profile.presenter';
+import {
+  toDiscoveryItem,
+  toOwnProfile,
+  toPublicProfile,
+} from './profile.presenter';
 
 describe('profile presenter', () => {
   const host = {

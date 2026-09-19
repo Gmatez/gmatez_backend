@@ -76,8 +76,7 @@ export function toDiscoveryItem(row: DiscoveryProfileRow, online: boolean) {
     country: row.country,
     language: row.language,
     avatarUrl: row.avatarUrl,
-    ratePerMinuteCents:
-      host?.voiceRatePerMinuteCents ?? row.ratePerMinuteCents,
+    ratePerMinuteCents: host?.voiceRatePerMinuteCents ?? row.ratePerMinuteCents,
     lastActiveAt: row.lastActiveAt,
     online,
     availableForCall,

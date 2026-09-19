@@ -12,6 +12,8 @@ export class ReportsService {
     reportedId: string,
     reason: ReportReason,
     details: string,
+    referenceType?: string,
+    referenceId?: string,
   ) {
     if (reporterId === reportedId) {
       throw new AppError(
@@ -29,6 +31,39 @@ export class ReportsService {
         HttpStatus.NOT_FOUND,
       );
     }
+    if (referenceType && referenceId) {
+      if (referenceType === 'call') {
+        const call = await this.prisma.call.findUnique({
+          where: { id: referenceId },
+        });
+        if (
+          !call ||
+          (call.callerId !== reporterId && call.calleeId !== reporterId)
+        ) {
+          throw new AppError(
+            ErrorCodes.FORBIDDEN,
+            'Not a participant of referenced call',
+            HttpStatus.FORBIDDEN,
+          );
+        }
+      }
+      if (referenceType === 'conversation') {
+        const conversation = await this.prisma.conversation.findUnique({
+          where: { id: referenceId },
+        });
+        if (
+          !conversation ||
+          (conversation.participantAId !== reporterId &&
+            conversation.participantBId !== reporterId)
+        ) {
+          throw new AppError(
+            ErrorCodes.FORBIDDEN,
+            'Not a participant of referenced conversation',
+            HttpStatus.FORBIDDEN,
+          );
+        }
+      }
+    }
     const recent = await this.prisma.report.findFirst({
       where: {
         reporterId,
@@ -44,7 +79,14 @@ export class ReportsService {
       );
     }
     return this.prisma.report.create({
-      data: { reporterId, reportedId, reason, details },
+      data: {
+        reporterId,
+        reportedId,
+        reason,
+        details,
+        referenceType: referenceType ?? null,
+        referenceId: referenceId ?? null,
+      },
     });
   }
 }

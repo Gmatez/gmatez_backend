@@ -80,9 +80,21 @@ export class PaymentsService {
     }
   }
 
+  /**
+   * TEST/DEV ONLY. Credits wallet via the same webhook path as production providers.
+   * Never available when NODE_ENV=production (allowsMockProviders is always false).
+   */
   async sandboxConfirm(userId: string, paymentId: string) {
-    if (!this.config.allowsMockSandbox || this.provider.name !== 'mock') {
-      throw new AppError(ErrorCodes.NOT_FOUND, 'Not found', HttpStatus.NOT_FOUND);
+    if (
+      this.config.isProduction ||
+      !this.config.allowsMockProviders ||
+      this.provider.name !== 'mock'
+    ) {
+      throw new AppError(
+        ErrorCodes.NOT_FOUND,
+        'Not found',
+        HttpStatus.NOT_FOUND,
+      );
     }
     const payment = await this.getOwn(userId, paymentId);
     if (payment.status === 'SUCCEEDED') {

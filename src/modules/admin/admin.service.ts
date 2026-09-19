@@ -1,10 +1,18 @@
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
-import { HostStatus, PayoutStatus, Prisma, ReportStatus, UserStatus } from '@prisma/client';
+import {
+  HostStatus,
+  HostVerificationStatus,
+  PayoutStatus,
+  Prisma,
+  ReportStatus,
+  UserStatus,
+} from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { AppError, ErrorCodes } from '../../common/errors/app-error';
 import { WalletService } from '../wallet/wallet.service';
 import { PayoutsService } from '../payouts/payouts.service';
 import { HostsService } from '../hosts/hosts.service';
+import { CallingService } from '../calling/calling.service';
 
 @Injectable()
 export class AdminService {
@@ -15,6 +23,7 @@ export class AdminService {
     private readonly wallet: WalletService,
     private readonly payouts: PayoutsService,
     private readonly hosts: HostsService,
+    private readonly calling: CallingService,
   ) {}
 
   listUsers(status?: UserStatus, q?: string) {
@@ -69,7 +78,11 @@ export class AdminService {
       },
     });
     if (!user) {
-      throw new AppError(ErrorCodes.NOT_FOUND, 'User not found', HttpStatus.NOT_FOUND);
+      throw new AppError(
+        ErrorCodes.NOT_FOUND,
+        'User not found',
+        HttpStatus.NOT_FOUND,
+      );
     }
     const [calls, payments, reports, payouts] = await Promise.all([
       this.prisma.call.findMany({
@@ -99,7 +112,11 @@ export class AdminService {
   async getCall(callId: string) {
     const call = await this.prisma.call.findUnique({ where: { id: callId } });
     if (!call) {
-      throw new AppError(ErrorCodes.NOT_FOUND, 'Call not found', HttpStatus.NOT_FOUND);
+      throw new AppError(
+        ErrorCodes.NOT_FOUND,
+        'Call not found',
+        HttpStatus.NOT_FOUND,
+      );
     }
     return call;
   }
@@ -131,11 +148,7 @@ export class AdminService {
     return this.payouts.listAll();
   }
 
-  setPayoutStatus(
-    actorId: string,
-    payoutId: string,
-    status: PayoutStatus,
-  ) {
+  setPayoutStatus(actorId: string, payoutId: string, status: PayoutStatus) {
     return this.payouts.adminSetStatus(actorId, payoutId, status);
   }
 
@@ -186,6 +199,25 @@ export class AdminService {
     return result.wallet;
   }
 
+  reconcileWallet(userId: string) {
+    return this.wallet.reconcile(userId);
+  }
+
+  refundCall(actorId: string, callId: string, reason?: string) {
+    return this.calling.refundSettledCall(actorId, callId, reason);
+  }
+
+  listAuditLogs(targetType?: string, targetId?: string) {
+    return this.prisma.auditLog.findMany({
+      where: {
+        ...(targetType ? { targetType } : {}),
+        ...(targetId ? { targetId } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+  }
+
   async overview() {
     const [users, calls, payments, pendingHosts] = await Promise.all([
       this.prisma.user.count(),
@@ -200,13 +232,38 @@ export class AdminService {
     return this.hosts.listForAdmin(status);
   }
 
+  getHost(userId: string) {
+    return this.hosts.adminGetHost(userId);
+  }
+
   setHostStatus(
     actorId: string,
     userId: string,
     status: HostStatus,
     reviewNote?: string,
+    internalNote?: string,
   ) {
-    return this.hosts.adminSetStatus(actorId, userId, status, reviewNote);
+    return this.hosts.adminSetStatus(
+      actorId,
+      userId,
+      status,
+      reviewNote,
+      internalNote,
+    );
+  }
+
+  setHostVerification(
+    actorId: string,
+    userId: string,
+    verificationStatus: HostVerificationStatus,
+    internalNote?: string,
+  ) {
+    return this.hosts.adminSetVerification(
+      actorId,
+      userId,
+      verificationStatus,
+      internalNote,
+    );
   }
 
   private async audit(

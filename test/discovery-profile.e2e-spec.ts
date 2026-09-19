@@ -1,5 +1,13 @@
 import { NestFastifyApplication } from '@nestjs/platform-fastify';
-import { closeApp, createTestApp, prisma, resetDatabase } from './helpers';
+import {
+  activateHost,
+  closeApp,
+  createTestApp,
+  me,
+  registerAdmin,
+  registerUser,
+  resetDatabase,
+} from './helpers';
 
 describe('discovery and profiles (e2e)', () => {
   let app: NestFastifyApplication;
@@ -16,35 +24,25 @@ describe('discovery and profiles (e2e)', () => {
     await closeApp(app);
   });
 
-  async function register(email: string, displayName: string) {
-    const res = await app.inject({
-      method: 'POST',
-      url: '/api/v1/auth/register',
-      payload: { email, password: 'ChangeMe123!', displayName },
-    });
-    expect(res.statusCode).toBe(201);
-    return JSON.parse(res.body) as { accessToken: string };
-  }
-
-  async function me(token: string) {
-    const res = await app.inject({
-      method: 'GET',
-      url: '/api/v1/users/me',
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(res.statusCode).toBe(200);
-    return JSON.parse(res.body) as { id: string; email: string };
+  async function adminSession() {
+    return registerAdmin(app);
   }
 
   it('rejects unauthenticated profile and discovery access', async () => {
-    const profile = await app.inject({ method: 'GET', url: '/api/v1/profiles/me' });
-    const feed = await app.inject({ method: 'GET', url: '/api/v1/discovery/feed' });
+    const profile = await app.inject({
+      method: 'GET',
+      url: '/api/v1/profiles/me',
+    });
+    const feed = await app.inject({
+      method: 'GET',
+      url: '/api/v1/discovery/feed',
+    });
     expect(profile.statusCode).toBe(401);
     expect(feed.statusCode).toBe(401);
   });
 
   it('returns the current user profile without secrets', async () => {
-    const session = await register('alice@example.com', 'Alice');
+    const session = await registerUser(app, 'alice@example.com', 'Alice');
     const res = await app.inject({
       method: 'GET',
       url: '/api/v1/profiles/me',
@@ -61,7 +59,7 @@ describe('discovery and profiles (e2e)', () => {
   });
 
   it('updates a valid profile and rejects invalid fields', async () => {
-    const session = await register('alice@example.com', 'Alice');
+    const session = await registerUser(app, 'alice@example.com', 'Alice');
     const ok = await app.inject({
       method: 'PATCH',
       url: '/api/v1/profiles/me',
@@ -103,7 +101,7 @@ describe('discovery and profiles (e2e)', () => {
   });
 
   it('returns 404 for a missing public profile and invalid ids', async () => {
-    const session = await register('alice@example.com', 'Alice');
+    const session = await registerUser(app, 'alice@example.com', 'Alice');
     const missing = await app.inject({
       method: 'GET',
       url: '/api/v1/users/00000000-0000-4000-8000-000000000099',
@@ -120,8 +118,8 @@ describe('discovery and profiles (e2e)', () => {
   });
 
   it('does not allow editing another user profile', async () => {
-    const alice = await register('alice@example.com', 'Alice');
-    const bob = await register('bob@example.com', 'Bob');
+    const alice = await registerUser(app, 'alice@example.com', 'Alice');
+    const bob = await registerUser(app, 'bob@example.com', 'Bob');
     await app.inject({
       method: 'PATCH',
       url: '/api/v1/profiles/me',
@@ -137,22 +135,45 @@ describe('discovery and profiles (e2e)', () => {
     expect(JSON.parse(bobProfile.body).displayName).toBe('Bob');
   });
 
-  it('lists discoverable users, excludes self and hidden users, and paginates', async () => {
-    const alice = await register('alice@example.com', 'Alice');
-    const bob = await register('bob@example.com', 'Bob');
-    const carol = await register('carol@example.com', 'Carol');
-    await register('dave@example.com', 'Dave');
-    await app.inject({
-      method: 'PATCH',
-      url: '/api/v1/profiles/me',
-      headers: { authorization: `Bearer ${carol.accessToken}` },
-      payload: { isDiscoverable: false, language: 'es' },
+  it('lists ACTIVE discoverable hosts only and paginates', async () => {
+    const alice = await registerUser(app, 'alice@example.com', 'Alice');
+    const bob = await registerUser(app, 'bob@example.com', 'Bob');
+    const carol = await registerUser(app, 'carol@example.com', 'Carol');
+    const dave = await registerUser(app, 'dave@example.com', 'Dave');
+    const admin = await adminSession();
+
+    const bobUser = await me(app, bob.accessToken);
+    const carolUser = await me(app, carol.accessToken);
+    const daveUser = await me(app, dave.accessToken);
+
+    await activateHost({
+      app,
+      hostToken: bob.accessToken,
+      adminToken: admin.accessToken,
+      hostUserId: bobUser.id,
+      languages: ['en'],
     });
+    await activateHost({
+      app,
+      hostToken: carol.accessToken,
+      adminToken: admin.accessToken,
+      hostUserId: carolUser.id,
+      languages: ['es'],
+    });
+    await activateHost({
+      app,
+      hostToken: dave.accessToken,
+      adminToken: admin.accessToken,
+      hostUserId: daveUser.id,
+      languages: ['en'],
+    });
+
+    // Carol hides from discovery while remaining ACTIVE (PAUSED ≠ discoverable).
     await app.inject({
-      method: 'PATCH',
-      url: '/api/v1/profiles/me',
-      headers: { authorization: `Bearer ${bob.accessToken}` },
-      payload: { language: 'en', bio: 'Bob bio' },
+      method: 'POST',
+      url: '/api/v1/hosts/me/availability',
+      headers: { authorization: `Bearer ${carol.accessToken}` },
+      payload: { availability: 'PAUSED' },
     });
 
     const feed = await app.inject({
@@ -167,8 +188,10 @@ describe('discovery and profiles (e2e)', () => {
     };
     const names = body.items.map((item) => item.displayName);
     expect(names).toContain('Bob');
+    expect(names).toContain('Dave');
     expect(names).not.toContain('Alice');
     expect(names).not.toContain('Carol');
+    expect(names).not.toContain('Admin');
 
     const page1 = await app.inject({
       method: 'GET',
@@ -186,7 +209,9 @@ describe('discovery and profiles (e2e)', () => {
       url: `/api/v1/discovery/feed?limit=1&cursor=${encodeURIComponent(first.nextCursor!)}`,
       headers: { authorization: `Bearer ${alice.accessToken}` },
     });
-    expect(JSON.parse(page2.body).items[0].userId).not.toBe(first.items[0].userId);
+    expect(JSON.parse(page2.body).items[0].userId).not.toBe(
+      first.items[0].userId,
+    );
 
     const search = await app.inject({
       method: 'GET',
@@ -207,18 +232,15 @@ describe('discovery and profiles (e2e)', () => {
       url: '/api/v1/discovery/feed?language=en',
       headers: { authorization: `Bearer ${alice.accessToken}` },
     });
-    expect(
-      JSON.parse(language.body).items.length,
-    ).toBeGreaterThan(0);
-    expect(
-      JSON.parse(language.body).items.every(
-        (item: { language: string }) => item.language === 'en',
-      ),
-    ).toBe(true);
+    const langItems = JSON.parse(language.body).items as Array<{
+      displayName: string;
+    }>;
+    expect(langItems.length).toBeGreaterThan(0);
+    expect(langItems.every((item) => item.displayName !== 'Carol')).toBe(true);
 
     const publicProfile = await app.inject({
       method: 'GET',
-      url: `/api/v1/users/${(await me(bob.accessToken)).id}`,
+      url: `/api/v1/users/${bobUser.id}`,
       headers: { authorization: `Bearer ${alice.accessToken}` },
     });
     expect(publicProfile.statusCode).toBe(200);
@@ -230,5 +252,75 @@ describe('discovery and profiles (e2e)', () => {
       headers: { authorization: `Bearer ${alice.accessToken}` },
     });
     expect(badLimit.statusCode).toBe(400);
+  });
+
+  it('excludes SUSPENDED hosts from discovery', async () => {
+    const alice = await registerUser(app, 'alice@example.com', 'Alice');
+    const bob = await registerUser(app, 'bob@example.com', 'Bob');
+    const admin = await adminSession();
+    const bobUser = await me(app, bob.accessToken);
+
+    await activateHost({
+      app,
+      hostToken: bob.accessToken,
+      adminToken: admin.accessToken,
+      hostUserId: bobUser.id,
+    });
+
+    const suspend = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/admin/hosts/${bobUser.id}/status`,
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+      payload: { status: 'SUSPENDED' },
+    });
+    expect(suspend.statusCode).toBe(200);
+
+    const feed = await app.inject({
+      method: 'GET',
+      url: '/api/v1/discovery/feed?limit=20',
+      headers: { authorization: `Bearer ${alice.accessToken}` },
+    });
+    const names = (
+      JSON.parse(feed.body) as { items: Array<{ displayName: string }> }
+    ).items.map((i) => i.displayName);
+    expect(names).not.toContain('Bob');
+  });
+
+  it('accepts flat host apply rates contract', async () => {
+    const bob = await registerUser(app, 'bob@example.com', 'Bob');
+    await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/profiles/me',
+      headers: { authorization: `Bearer ${bob.accessToken}` },
+      payload: { avatarUrl: 'https://cdn.example.com/avatars/bob.png' },
+    });
+    const apply = await app.inject({
+      method: 'POST',
+      url: '/api/v1/hosts/applications',
+      headers: { authorization: `Bearer ${bob.accessToken}` },
+      payload: {
+        applicationBio: 'Ready to listen carefully every day.',
+        languages: ['en'],
+        interests: ['chat'],
+        voiceEnabled: true,
+        videoEnabled: false,
+        voiceRatePerMinuteCents: 200,
+        videoRatePerMinuteCents: 300,
+        acceptedAgreements: [
+          { agreementType: 'HOST_GUIDELINES', version: '1.0' },
+          { agreementType: 'TERMS_OF_SERVICE', version: '1.0' },
+          { agreementType: 'PRIVACY_POLICY', version: '1.0' },
+        ],
+      },
+    });
+    expect(apply.statusCode).toBe(201);
+    const body = JSON.parse(apply.body) as {
+      status: string;
+      voiceRatePerMinuteCents: number;
+      videoRatePerMinuteCents: number;
+    };
+    expect(body.status).toBe('PENDING_REVIEW');
+    expect(body.voiceRatePerMinuteCents).toBe(200);
+    expect(body.videoRatePerMinuteCents).toBe(300);
   });
 });

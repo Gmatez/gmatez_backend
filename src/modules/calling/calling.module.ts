@@ -9,7 +9,13 @@ import { CallingGateway } from './calling.gateway';
 import { CallingService } from './calling.service';
 
 @Module({
-  imports: [WalletModule, BlockingModule, NotificationsModule, ChatModule, HostsModule],
+  imports: [
+    WalletModule,
+    BlockingModule,
+    NotificationsModule,
+    ChatModule,
+    HostsModule,
+  ],
   controllers: [CallingController],
   providers: [CallingService, CallingGateway],
   exports: [CallingService],

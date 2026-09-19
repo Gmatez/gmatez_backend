@@ -16,6 +16,7 @@ import {
   ApiPropertyOptional,
   ApiTags,
 } from '@nestjs/swagger';
+import { CallStatus, CallType } from '@prisma/client';
 import { IsIn, IsOptional, IsString, IsUUID, MinLength } from 'class-validator';
 import type { FastifyRequest } from 'fastify';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -38,6 +39,23 @@ export class CreateCallDto {
   @IsString()
   @MinLength(8)
   idempotencyKey?: string;
+}
+
+export class ListCallsQueryDto extends CursorPaginationQueryDto {
+  @ApiPropertyOptional({ enum: CallStatus })
+  @IsOptional()
+  @IsIn(Object.values(CallStatus))
+  status?: CallStatus;
+
+  @ApiPropertyOptional({ enum: ['VOICE', 'VIDEO'] })
+  @IsOptional()
+  @IsIn(['VOICE', 'VIDEO'])
+  callType?: CallType;
+
+  @ApiPropertyOptional({ enum: ['caller', 'callee'] })
+  @IsOptional()
+  @IsIn(['caller', 'callee'])
+  role?: 'caller' | 'callee';
 }
 
 @ApiTags('calling')
@@ -76,9 +94,13 @@ export class CallingController {
   @Get()
   list(
     @CurrentUser() user: { userId: string },
-    @Query() query: CursorPaginationQueryDto,
+    @Query() query: ListCallsQueryDto,
   ) {
-    return this.calling.listHistory(user.userId, query.limit, query.cursor);
+    return this.calling.listHistory(user.userId, query.limit, query.cursor, {
+      status: query.status,
+      callType: query.callType,
+      role: query.role,
+    });
   }
 
   @ApiBearerAuth()
@@ -91,6 +113,28 @@ export class CallingController {
   @Post(':id/accept')
   accept(@CurrentUser() user: { userId: string }, @Param('id') id: string) {
     return this.calling.accept(id, user.userId);
+  }
+
+  @ApiBearerAuth()
+  @Post(':id/rtc-token')
+  rtcToken(@CurrentUser() user: { userId: string }, @Param('id') id: string) {
+    return this.calling.issueRtcToken(id, user.userId);
+  }
+
+  @ApiBearerAuth()
+  @Post(':id/rtc-joined')
+  rtcJoined(@CurrentUser() user: { userId: string }, @Param('id') id: string) {
+    return this.calling.markRtcJoined(id, user.userId);
+  }
+
+  @ApiBearerAuth()
+  @Post(':id/rtc-failed')
+  rtcFailed(
+    @CurrentUser() user: { userId: string },
+    @Param('id') id: string,
+    @Body() body: { reason?: string },
+  ) {
+    return this.calling.reportRtcFailed(id, user.userId, body?.reason);
   }
 
   @ApiBearerAuth()

@@ -69,7 +69,7 @@ async function bootstrap() {
 
 void bootstrap().catch((error: unknown) => {
   Logger.error(
-    error instanceof Error ? error.stack ?? error.message : String(error),
+    error instanceof Error ? (error.stack ?? error.message) : String(error),
   );
   process.exit(1);
 });

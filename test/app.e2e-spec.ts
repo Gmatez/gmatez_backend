@@ -1,5 +1,14 @@
 import { NestFastifyApplication } from '@nestjs/platform-fastify';
-import { closeApp, createTestApp, prisma, resetDatabase } from './helpers';
+import {
+  activateHost,
+  closeApp,
+  createTestApp,
+  me,
+  prisma,
+  registerAdmin,
+  registerUser,
+  resetDatabase,
+} from './helpers';
 
 describe('critical flows (e2e)', () => {
   let app: NestFastifyApplication;
@@ -16,24 +25,8 @@ describe('critical flows (e2e)', () => {
     await closeApp(app);
   });
 
-  async function register(email: string, displayName: string) {
-    const res = await app.inject({
-      method: 'POST',
-      url: '/api/v1/auth/register',
-      payload: { email, password: 'ChangeMe123!', displayName },
-    });
-    expect(res.statusCode).toBe(201);
-    return JSON.parse(res.body) as { accessToken: string };
-  }
-
-  async function me(token: string) {
-    const res = await app.inject({
-      method: 'GET',
-      url: '/api/v1/users/me',
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(res.statusCode).toBe(200);
-    return JSON.parse(res.body) as { id: string };
+  async function adminSession() {
+    return registerAdmin(app);
   }
 
   it('rejects unauthenticated access', async () => {
@@ -42,7 +35,7 @@ describe('critical flows (e2e)', () => {
   });
 
   it('registers, logs in, and returns a wallet', async () => {
-    const session = await register('alice@example.com', 'Alice');
+    const session = await registerUser(app, 'alice@example.com', 'Alice');
     const wallet = await app.inject({
       method: 'GET',
       url: '/api/v1/wallet',
@@ -53,7 +46,7 @@ describe('critical flows (e2e)', () => {
   });
 
   it('credits the wallet once for duplicate payment webhooks', async () => {
-    const session = await register('alice@example.com', 'Alice');
+    const session = await registerUser(app, 'alice@example.com', 'Alice');
     const intent = await app.inject({
       method: 'POST',
       url: '/api/v1/payments/intents',
@@ -95,11 +88,20 @@ describe('critical flows (e2e)', () => {
     expect(JSON.parse(wallet.body).availableBalanceCents).toBe(2500);
   });
 
-  it('walks a call from ring to billed end', async () => {
-    const alice = await register('alice@example.com', 'Alice');
-    const bob = await register('bob@example.com', 'Bob');
-    const aliceUser = await me(alice.accessToken);
-    const bobUser = await me(bob.accessToken);
+  it('walks a call from ring to billed end with ACTIVE ONLINE host', async () => {
+    const alice = await registerUser(app, 'alice@example.com', 'Alice');
+    const bob = await registerUser(app, 'bob@example.com', 'Bob');
+    const aliceUser = await me(app, alice.accessToken);
+    const bobUser = await me(app, bob.accessToken);
+    const admin = await adminSession();
+
+    await activateHost({
+      app,
+      hostToken: bob.accessToken,
+      adminToken: admin.accessToken,
+      hostUserId: bobUser.id,
+      online: true,
+    });
 
     await app.inject({
       method: 'POST',
@@ -124,15 +126,17 @@ describe('critical flows (e2e)', () => {
       method: 'POST',
       url: '/api/v1/calls',
       headers: { authorization: `Bearer ${alice.accessToken}` },
-      payload: { calleeId: bobUser.id },
+      payload: { calleeId: bobUser.id, callType: 'VOICE' },
     });
     expect(created.statusCode).toBe(201);
     const call = JSON.parse(created.body) as {
       id: string;
       status: string;
+      settlementStatus: string;
       providerSessionId: string;
     };
     expect(call.status).toBe('RINGING');
+    expect(call.settlementStatus).toBe('PENDING');
 
     const accepted = await app.inject({
       method: 'POST',
@@ -159,7 +163,14 @@ describe('critical flows (e2e)', () => {
       headers: { authorization: `Bearer ${alice.accessToken}` },
     });
     expect(ended.statusCode).toBe(201);
-    expect(JSON.parse(ended.body).status).toBe('ENDED');
+    const endedBody = JSON.parse(ended.body) as {
+      status: string;
+      settlementStatus: string;
+      billedAmountCents: number;
+    };
+    expect(endedBody.status).toBe('ENDED');
+    expect(endedBody.settlementStatus).toBe('SETTLED');
+    expect(endedBody.billedAmountCents).toBeGreaterThan(0);
 
     const wallet = await app.inject({
       method: 'GET',
@@ -174,9 +185,22 @@ describe('critical flows (e2e)', () => {
     expect(body.availableBalanceCents).toBeLessThan(5000);
   });
 
+  it('rejects call to non-ACTIVE host', async () => {
+    const alice = await registerUser(app, 'alice@example.com', 'Alice');
+    const bob = await registerUser(app, 'bob@example.com', 'Bob');
+    const bobUser = await me(app, bob.accessToken);
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/calls',
+      headers: { authorization: `Bearer ${alice.accessToken}` },
+      payload: { calleeId: bobUser.id },
+    });
+    expect(created.statusCode).toBeGreaterThanOrEqual(400);
+  });
+
   it('blocks IDOR on another user payment', async () => {
-    const alice = await register('alice@example.com', 'Alice');
-    const bob = await register('bob@example.com', 'Bob');
+    const alice = await registerUser(app, 'alice@example.com', 'Alice');
+    const bob = await registerUser(app, 'bob@example.com', 'Bob');
     const intent = await app.inject({
       method: 'POST',
       url: '/api/v1/payments/intents',
@@ -190,5 +214,15 @@ describe('critical flows (e2e)', () => {
       headers: { authorization: `Bearer ${bob.accessToken}` },
     });
     expect(peek.statusCode).toBe(404);
+  });
+
+  it('forbids USER role from admin overview', async () => {
+    const alice = await registerUser(app, 'alice@example.com', 'Alice');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/overview',
+      headers: { authorization: `Bearer ${alice.accessToken}` },
+    });
+    expect(res.statusCode).toBe(403);
   });
 });

@@ -42,10 +42,25 @@ export class ProfilesService {
 
   async updateMine(userId: string, patch: ProfilePatch) {
     const data = this.normalizePatch(patch);
+    // Host discoverability is owned by HostsService availability transitions.
+    const host = await this.prisma.hostProfile.findUnique({
+      where: { userId },
+      select: { status: true, availability: true },
+    });
+    if (host) {
+      delete data.isDiscoverable;
+    }
     const profile = await this.prisma.profile.update({
       where: { userId },
       data,
     });
+    if (host?.status === 'ACTIVE' && host.availability === 'ONLINE') {
+      // Keep lastActiveAt fresh on meaningful profile edits while online.
+      await this.prisma.profile.update({
+        where: { userId },
+        data: { lastActiveAt: new Date() },
+      });
+    }
     this.logger.log({ userId }, 'profile updated');
     const online = (await this.redis.onlineUserIds([userId])).has(userId);
     return toOwnProfile(profile, online);
@@ -81,10 +96,7 @@ export class ProfilesService {
     if (data.language !== undefined && data.language !== null) {
       const language = data.language.trim().toLowerCase();
       if (language !== '' && !/^[a-z-]{2,16}$/.test(language)) {
-        throw new AppError(
-          ErrorCodes.VALIDATION_FAILED,
-          'Language is invalid',
-        );
+        throw new AppError(ErrorCodes.VALIDATION_FAILED, 'Language is invalid');
       }
       data.language = language === '' ? null : language;
     }

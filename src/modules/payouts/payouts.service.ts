@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { PayoutStatus } from '@prisma/client';
+import { PayoutStatus, Prisma } from '@prisma/client';
 import { AppError, ErrorCodes } from '../../common/errors/app-error';
 import { PrismaService } from '../../database/prisma.service';
 import { WalletService } from '../wallet/wallet.service';
@@ -37,6 +37,17 @@ export class PayoutsService {
       }
       return existing;
     }
+    const destination = await this.prisma.payoutDestination.findFirst({
+      where: { userId, isDefault: true },
+      orderBy: { updatedAt: 'desc' },
+    });
+    if (!destination) {
+      throw new AppError(
+        ErrorCodes.PAYOUT_NOT_ELIGIBLE,
+        'Add a payout destination before requesting a payout',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+    }
     const pending = await this.prisma.payoutRequest.findFirst({
       where: { userId, status: { in: ['REQUESTED', 'PROCESSING'] } },
     });
@@ -48,27 +59,82 @@ export class PayoutsService {
       );
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      await this.wallet.applyLedger(
-        {
-          userId,
-          type: 'DEBIT',
-          reason: 'PAYOUT',
-          amountCents,
-          idempotencyKey: `payout:${idempotencyKey}`,
-          referenceType: 'payout',
-          metadata: { status: 'REQUESTED' },
-        },
-        tx,
-      );
-      return tx.payoutRequest.create({
-        data: {
-          userId,
-          amountCents,
-          idempotencyKey,
-          status: 'REQUESTED',
-        },
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        await this.wallet.applyLedger(
+          {
+            userId,
+            type: 'DEBIT',
+            reason: 'PAYOUT',
+            amountCents,
+            idempotencyKey: `payout:${idempotencyKey}`,
+            referenceType: 'payout',
+            metadata: { status: 'REQUESTED', destinationId: destination.id },
+          },
+          tx,
+        );
+        return tx.payoutRequest.create({
+          data: {
+            userId,
+            destinationId: destination.id,
+            amountCents,
+            idempotencyKey,
+            status: 'REQUESTED',
+          },
+        });
       });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        const raced = await this.prisma.payoutRequest.findUnique({
+          where: { idempotencyKey },
+        });
+        if (raced && raced.userId === userId) {
+          return raced;
+        }
+      }
+      throw error;
+    }
+  }
+
+  async upsertDestination(
+    userId: string,
+    input: {
+      type: string;
+      label?: string;
+      details: Record<string, unknown>;
+    },
+  ) {
+    await this.hosts.requireActiveHost(userId);
+    const type = input.type.trim().toUpperCase();
+    if (!['BANK', 'UPI', 'PAYPAL', 'OTHER'].includes(type)) {
+      throw new AppError(
+        ErrorCodes.VALIDATION_FAILED,
+        'Invalid payout destination type',
+      );
+    }
+    await this.prisma.payoutDestination.updateMany({
+      where: { userId },
+      data: { isDefault: false },
+    });
+    return this.prisma.payoutDestination.create({
+      data: {
+        userId,
+        type,
+        label: input.label?.slice(0, 80) ?? '',
+        detailsJson: input.details as Prisma.InputJsonValue,
+        isDefault: true,
+      },
+    });
+  }
+
+  listDestinations(userId: string) {
+    return this.prisma.payoutDestination.findMany({
+      where: { userId },
+      orderBy: [{ isDefault: 'desc' }, { updatedAt: 'desc' }],
+      take: 20,
     });
   }
 
@@ -98,7 +164,11 @@ export class PayoutsService {
       where: { id: payoutId },
     });
     if (!payout) {
-      throw new AppError(ErrorCodes.NOT_FOUND, 'Payout not found', HttpStatus.NOT_FOUND);
+      throw new AppError(
+        ErrorCodes.NOT_FOUND,
+        'Payout not found',
+        HttpStatus.NOT_FOUND,
+      );
     }
     if (payout.status === 'COMPLETED' || payout.status === 'REJECTED') {
       throw new AppError(

@@ -1,8 +1,15 @@
 import { Body, Controller, Get, Patch, Post } from '@nestjs/common';
-import { ApiBearerAuth, ApiProperty, ApiPropertyOptional, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiProperty,
+  ApiPropertyOptional,
+  ApiTags,
+} from '@nestjs/swagger';
 import { HostAvailability } from '@prisma/client';
+import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
+  ArrayMinSize,
   IsArray,
   IsBoolean,
   IsIn,
@@ -13,9 +20,25 @@ import {
   MaxLength,
   Min,
   MinLength,
+  ValidateNested,
 } from 'class-validator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { HostsService } from './hosts.service';
+
+export class HostAgreementAcceptanceDto {
+  @ApiProperty({
+    enum: ['HOST_GUIDELINES', 'TERMS_OF_SERVICE', 'PRIVACY_POLICY'],
+  })
+  @IsString()
+  @IsIn(['HOST_GUIDELINES', 'TERMS_OF_SERVICE', 'PRIVACY_POLICY'])
+  agreementType!: string;
+
+  @ApiProperty({ example: '1.0' })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(16)
+  version!: string;
+}
 
 export class HostApplyDto {
   @ApiProperty()
@@ -26,6 +49,7 @@ export class HostApplyDto {
 
   @ApiProperty({ type: [String] })
   @IsArray()
+  @ArrayMinSize(1)
   @ArrayMaxSize(12)
   @IsString({ each: true })
   languages!: string[];
@@ -59,6 +83,13 @@ export class HostApplyDto {
   @Min(1)
   @Max(100000)
   videoRatePerMinuteCents?: number;
+
+  @ApiProperty({ type: [HostAgreementAcceptanceDto] })
+  @IsArray()
+  @ArrayMinSize(3)
+  @ValidateNested({ each: true })
+  @Type(() => HostAgreementAcceptanceDto)
+  acceptedAgreements!: HostAgreementAcceptanceDto[];
 }
 
 export class HostPatchDto {
@@ -124,24 +155,23 @@ export class HostsController {
     return this.hosts.getMe(user.userId);
   }
 
+  @Get('me/completeness')
+  completeness(@CurrentUser() user: { userId: string }) {
+    return this.hosts.getCompleteness(user.userId);
+  }
+
   @Get('me/dashboard')
   dashboard(@CurrentUser() user: { userId: string }) {
     return this.hosts.dashboard(user.userId);
   }
 
   @Post('applications')
-  apply(
-    @CurrentUser() user: { userId: string },
-    @Body() body: HostApplyDto,
-  ) {
+  apply(@CurrentUser() user: { userId: string }, @Body() body: HostApplyDto) {
     return this.hosts.apply(user.userId, body);
   }
 
   @Patch('me')
-  patch(
-    @CurrentUser() user: { userId: string },
-    @Body() body: HostPatchDto,
-  ) {
+  patch(@CurrentUser() user: { userId: string }, @Body() body: HostPatchDto) {
     return this.hosts.patchMe(user.userId, body);
   }
 

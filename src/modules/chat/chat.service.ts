@@ -1,4 +1,4 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { AppError, ErrorCodes } from '../../common/errors/app-error';
 import {
@@ -6,18 +6,39 @@ import {
   decodeCursor,
   encodeCursor,
 } from '../../common/dto/pagination.dto';
+import { RateLimitService } from '../../common/rate-limit/rate-limit.service';
 import { PrismaService } from '../../database/prisma.service';
+import { RedisService } from '../../redis/redis.service';
 import { RealtimeEmitter } from '../../realtime/realtime-emitter';
 import { BlockingService } from '../blocking/blocking.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 const MAX_BODY = 2000;
+const MESSAGE_SEND_LIMIT = 30;
+const MESSAGE_SEND_WINDOW_SECONDS = 60;
+
+export type PresentedMessage = {
+  id: string;
+  conversationId: string;
+  senderId: string;
+  body: string;
+  status: 'SENT' | 'READ';
+  readAt: Date | null;
+  createdAt: Date;
+  idempotencyKey?: string;
+};
 
 @Injectable()
 export class ChatService {
+  private readonly logger = new Logger(ChatService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly blocking: BlockingService,
     private readonly realtime: RealtimeEmitter,
+    private readonly rateLimit: RateLimitService,
+    private readonly redis: RedisService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   async openConversation(userId: string, peerId: string) {
@@ -29,7 +50,7 @@ export class ChatService {
     }
     if (await this.blocking.isBlockedEitherWay(userId, peerId)) {
       throw new AppError(
-        ErrorCodes.USER_BLOCKED,
+        ErrorCodes.MESSAGE_BLOCKED,
         'User is unavailable',
         HttpStatus.FORBIDDEN,
       );
@@ -39,24 +60,47 @@ export class ChatService {
       include: { profile: true },
     });
     if (!peer || peer.status !== 'ACTIVE') {
-      throw new AppError(ErrorCodes.NOT_FOUND, 'User not found', HttpStatus.NOT_FOUND);
+      throw new AppError(
+        ErrorCodes.NOT_FOUND,
+        'User not found',
+        HttpStatus.NOT_FOUND,
+      );
     }
     const [participantAId, participantBId] = [userId, peerId].sort();
-    const conversation = await this.prisma.conversation.upsert({
-      where: {
-        participantAId_participantBId: { participantAId, participantBId },
-      },
-      update: {},
-      create: { participantAId, participantBId },
-    });
-    return this.presentConversation(conversation, userId);
+    try {
+      const conversation = await this.prisma.conversation.upsert({
+        where: {
+          participantAId_participantBId: { participantAId, participantBId },
+        },
+        update: {},
+        create: { participantAId, participantBId },
+      });
+      return this.presentConversation(conversation, userId);
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        const existing = await this.prisma.conversation.findUnique({
+          where: {
+            participantAId_participantBId: { participantAId, participantBId },
+          },
+        });
+        if (existing) {
+          return this.presentConversation(existing, userId);
+        }
+      }
+      throw error;
+    }
   }
 
   async listConversations(
     userId: string,
     limit: number,
     cursor?: string,
-  ): Promise<CursorPage<Awaited<ReturnType<ChatService['presentConversation']>>>> {
+  ): Promise<
+    CursorPage<Awaited<ReturnType<ChatService['presentConversation']>>>
+  > {
     const cursorFilter = cursor ? decodeCursor(cursor) : undefined;
     const rows = await this.prisma.conversation.findMany({
       where: {
@@ -124,7 +168,10 @@ export class ChatService {
     };
   }
 
-  async peerIdFor(userId: string, conversationId: string): Promise<string | null> {
+  async peerIdFor(
+    userId: string,
+    conversationId: string,
+  ): Promise<string | null> {
     const conversation = await this.prisma.conversation.findUnique({
       where: { id: conversationId },
     });
@@ -140,6 +187,24 @@ export class ChatService {
       : conversation.participantAId;
   }
 
+  /**
+   * Returns peer id only when participant AND not blocked either way.
+   * Used by typing / room subscribe.
+   */
+  async peerIdForRealtime(
+    userId: string,
+    conversationId: string,
+  ): Promise<string | null> {
+    const peerId = await this.peerIdFor(userId, conversationId);
+    if (!peerId) {
+      return null;
+    }
+    if (await this.blocking.isBlockedEitherWay(userId, peerId)) {
+      return null;
+    }
+    return peerId;
+  }
+
   async sendMessage(
     userId: string,
     conversationId: string,
@@ -147,12 +212,31 @@ export class ChatService {
     idempotencyKey: string,
   ) {
     const trimmed = body.trim();
-    if (!trimmed || trimmed.length > MAX_BODY) {
+    if (!trimmed) {
+      throw new AppError(ErrorCodes.MESSAGE_INVALID, 'Message body is invalid');
+    }
+    if (trimmed.length > MAX_BODY) {
       throw new AppError(
-        ErrorCodes.VALIDATION_FAILED,
-        'Message body is invalid',
+        ErrorCodes.MESSAGE_TOO_LONG,
+        'Message is too long',
+        HttpStatus.BAD_REQUEST,
       );
     }
+    if (!idempotencyKey || idempotencyKey.length < 8) {
+      throw new AppError(
+        ErrorCodes.MESSAGE_INVALID,
+        'Idempotency key is required',
+      );
+    }
+
+    await this.rateLimit.assertAllowed({
+      key: `gmatez:ratelimit:chat:send:${userId}`,
+      limit: MESSAGE_SEND_LIMIT,
+      windowSeconds: MESSAGE_SEND_WINDOW_SECONDS,
+      code: ErrorCodes.MESSAGE_RATE_LIMITED,
+      message: 'Too many messages. Please wait and try again.',
+    });
+
     const conversation = await this.requireParticipant(conversationId, userId);
     const peerId =
       conversation.participantAId === userId
@@ -160,7 +244,7 @@ export class ChatService {
         : conversation.participantAId;
     if (await this.blocking.isBlockedEitherWay(userId, peerId)) {
       throw new AppError(
-        ErrorCodes.USER_BLOCKED,
+        ErrorCodes.MESSAGE_BLOCKED,
         'User is unavailable',
         HttpStatus.FORBIDDEN,
       );
@@ -170,7 +254,10 @@ export class ChatService {
       where: { idempotencyKey },
     });
     if (existing) {
-      if (existing.senderId !== userId) {
+      if (
+        existing.senderId !== userId ||
+        existing.conversationId !== conversationId
+      ) {
         throw new AppError(
           ErrorCodes.CONFLICT,
           'Idempotency key already used',
@@ -199,9 +286,23 @@ export class ChatService {
         });
         return created;
       });
+
       const payload = this.presentMessage(message);
+      // Fanout only after commit.
       this.realtime.emitToUser(userId, 'message.created', payload);
       this.realtime.emitToUser(peerId, 'message.created', payload);
+      this.realtime.emitToConversation(
+        conversationId,
+        'message.created',
+        payload,
+      );
+
+      await this.notifyOfflinePeer(peerId, userId, message.id, conversationId);
+
+      this.logger.log(
+        { conversationId, messageId: message.id, userId },
+        'chat.message_created',
+      );
       return payload;
     } catch (error) {
       if (
@@ -211,7 +312,7 @@ export class ChatService {
         const dup = await this.prisma.message.findUnique({
           where: { idempotencyKey },
         });
-        if (dup) {
+        if (dup && dup.senderId === userId) {
           return this.presentMessage(dup);
         }
       }
@@ -221,7 +322,7 @@ export class ChatService {
 
   async markRead(userId: string, conversationId: string) {
     const conversation = await this.requireParticipant(conversationId, userId);
-    await this.prisma.message.updateMany({
+    const result = await this.prisma.message.updateMany({
       where: {
         conversationId,
         senderId: { not: userId },
@@ -233,24 +334,67 @@ export class ChatService {
       conversation.participantAId === userId
         ? conversation.participantBId
         : conversation.participantAId;
-    this.realtime.emitToUser(peerId, 'message.read', {
+    const payload = {
       conversationId,
       readerId: userId,
+      readCount: result.count,
+    };
+    this.realtime.emitToUser(peerId, 'message.read', payload);
+    this.realtime.emitToConversation(conversationId, 'message.read', payload);
+    return { ok: true, unreadCount: 0 };
+  }
+
+  private async notifyOfflinePeer(
+    peerId: string,
+    senderId: string,
+    messageId: string,
+    conversationId: string,
+  ) {
+    const online = await this.redis.client.exists(`presence:${peerId}`);
+    if (online === 1) {
+      return;
+    }
+    const sender = await this.prisma.profile.findUnique({
+      where: { userId: senderId },
+      select: { displayName: true },
     });
-    return { ok: true };
+    try {
+      await this.notifications.notifyChatMessage({
+        userId: peerId,
+        messageId,
+        conversationId,
+        senderId,
+        title: sender?.displayName ?? 'New message',
+        body: 'You have a new message',
+      });
+    } catch (error) {
+      this.logger.warn(
+        {
+          messageId,
+          err: error instanceof Error ? error.message : 'unknown',
+        },
+        'chat.push_enqueue_failed',
+      );
+    }
   }
 
   private async requireParticipant(conversationId: string, userId: string) {
     const conversation = await this.prisma.conversation.findUnique({
       where: { id: conversationId },
     });
+    if (!conversation) {
+      throw new AppError(
+        ErrorCodes.CONVERSATION_NOT_FOUND,
+        'Conversation not found',
+        HttpStatus.NOT_FOUND,
+      );
+    }
     if (
-      !conversation ||
-      (conversation.participantAId !== userId &&
-        conversation.participantBId !== userId)
+      conversation.participantAId !== userId &&
+      conversation.participantBId !== userId
     ) {
       throw new AppError(
-        ErrorCodes.NOT_FOUND,
+        ErrorCodes.CONVERSATION_FORBIDDEN,
         'Conversation not found',
         HttpStatus.NOT_FOUND,
       );
@@ -277,13 +421,13 @@ export class ChatService {
         : conversation.participantAId,
     );
     const ids = conversations.map((conversation) => conversation.id);
-    const [profiles, unreadRows] = await Promise.all([
+    const [profiles, unreadRows, online] = await Promise.all([
       this.prisma.profile.findMany({
         where: { userId: { in: peerIds } },
         select: { userId: true, displayName: true, avatarUrl: true },
       }),
       this.prisma.message.groupBy({
-        by: ['conversationId', 'senderId'],
+        by: ['conversationId'],
         where: {
           conversationId: { in: ids },
           senderId: { not: userId },
@@ -291,15 +435,12 @@ export class ChatService {
         },
         _count: { _all: true },
       }),
+      this.redis.onlineUserIds(peerIds),
     ]);
     const profileByUser = new Map(profiles.map((row) => [row.userId, row]));
-    const unreadByConversation = new Map<string, number>();
-    for (const row of unreadRows) {
-      unreadByConversation.set(
-        row.conversationId,
-        (unreadByConversation.get(row.conversationId) ?? 0) + row._count._all,
-      );
-    }
+    const unreadByConversation = new Map(
+      unreadRows.map((row) => [row.conversationId, row._count._all]),
+    );
     return conversations.map((conversation) => {
       const peerId =
         conversation.participantAId === userId
@@ -311,6 +452,7 @@ export class ChatService {
         peerUserId: peerId,
         peerDisplayName: peer?.displayName ?? 'User',
         peerAvatarUrl: peer?.avatarUrl ?? null,
+        peerOnline: online.has(peerId),
         lastMessageAt: conversation.lastMessageAt,
         lastMessagePreview: conversation.lastMessagePreview,
         unreadCount: unreadByConversation.get(conversation.id) ?? 0,
@@ -339,12 +481,14 @@ export class ChatService {
     body: string;
     readAt: Date | null;
     createdAt: Date;
-  }) {
+    idempotencyKey?: string;
+  }): PresentedMessage {
     return {
       id: message.id,
       conversationId: message.conversationId,
       senderId: message.senderId,
       body: message.body,
+      status: message.readAt ? 'READ' : 'SENT',
       readAt: message.readAt,
       createdAt: message.createdAt,
     };

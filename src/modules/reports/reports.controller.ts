@@ -30,6 +30,16 @@ export class CreateReportDto {
   @IsString()
   @MaxLength(2000)
   details?: string;
+
+  @ApiPropertyOptional({ enum: ['call', 'conversation', 'message'] })
+  @IsOptional()
+  @IsString()
+  referenceType?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUUID()
+  referenceId?: string;
 }
 
 @ApiTags('reports')
@@ -48,6 +58,8 @@ export class ReportsController {
       body.userId,
       body.reason,
       body.details ?? '',
+      body.referenceType,
+      body.referenceId,
     );
   }
 }

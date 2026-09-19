@@ -1,5 +1,6 @@
-# Free demo host. Postgres expires after 30 days. The web service sleeps
-# after 15 minutes and wakes on the next request (about a minute).
+# Free demo host (NOT production). Postgres expires after 30 days. The web
+# service sleeps after 15 minutes. NODE_ENV=development intentionally so
+# mock providers are allowed — production rejects mocks at startup.
 services:
   - type: web
     name: gmatez-api
@@ -20,6 +21,8 @@ services:
         value: "true"
       - key: MOCK_OTP
         value: "123456"
+      - key: OTP_PROVIDER
+        value: mock
       - key: CALLING_PROVIDER
         value: mock
       - key: PAYMENT_PROVIDER

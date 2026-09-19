@@ -1,6 +1,18 @@
 import { Body, Controller, Get, Post } from '@nestjs/common';
-import { ApiBearerAuth, ApiProperty, ApiTags } from '@nestjs/swagger';
-import { IsInt, IsString, Min, MinLength } from 'class-validator';
+import {
+  ApiBearerAuth,
+  ApiProperty,
+  ApiPropertyOptional,
+  ApiTags,
+} from '@nestjs/swagger';
+import {
+  IsInt,
+  IsObject,
+  IsOptional,
+  IsString,
+  Min,
+  MinLength,
+} from 'class-validator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PayoutsService } from './payouts.service';
 
@@ -14,6 +26,21 @@ export class CreatePayoutDto {
   @IsString()
   @MinLength(8)
   idempotencyKey!: string;
+}
+
+export class UpsertDestinationDto {
+  @ApiProperty({ enum: ['BANK', 'UPI', 'PAYPAL', 'OTHER'] })
+  @IsString()
+  type!: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  label?: string;
+
+  @ApiProperty({ type: 'object', additionalProperties: true })
+  @IsObject()
+  details!: Record<string, unknown>;
 }
 
 @ApiTags('payouts')
@@ -37,5 +64,18 @@ export class PayoutsController {
   @Get()
   list(@CurrentUser() user: { userId: string }) {
     return this.payouts.list(user.userId);
+  }
+
+  @Get('destinations')
+  listDestinations(@CurrentUser() user: { userId: string }) {
+    return this.payouts.listDestinations(user.userId);
+  }
+
+  @Post('destinations')
+  upsertDestination(
+    @CurrentUser() user: { userId: string },
+    @Body() body: UpsertDestinationDto,
+  ) {
+    return this.payouts.upsertDestination(user.userId, body);
   }
 }

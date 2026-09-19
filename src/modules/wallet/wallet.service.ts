@@ -326,12 +326,15 @@ export class WalletService {
     const wallet = await this.getByUserId(userId);
     const grouped = await this.prisma.walletLedgerEntry.groupBy({
       by: ['reason'],
-      where: { walletId: wallet.id, reason: { in: ['CREATOR_EARNING', 'PAYOUT'] } },
+      where: {
+        walletId: wallet.id,
+        reason: { in: ['CREATOR_EARNING', 'PAYOUT'] },
+      },
       _sum: { amountCents: true },
     });
     const earned =
-      grouped.find((row) => row.reason === 'CREATOR_EARNING')?._sum.amountCents ??
-      0;
+      grouped.find((row) => row.reason === 'CREATOR_EARNING')?._sum
+        .amountCents ?? 0;
     const paidOut =
       grouped.find((row) => row.reason === 'PAYOUT')?._sum.amountCents ?? 0;
     const pending = await this.prisma.payoutRequest.aggregate({
@@ -373,5 +376,64 @@ export class WalletService {
         data: { heldAmountCents: 0 },
       });
     });
+  }
+
+  /**
+   * Reconcile wallet columns vs ledger and active call holds.
+   * Does not auto-correct — returns diagnostics for admin review.
+   */
+  async reconcile(userId: string) {
+    const wallet = await this.getByUserId(userId);
+    const credits = await this.prisma.walletLedgerEntry.aggregate({
+      where: { walletId: wallet.id, type: 'CREDIT' },
+      _sum: { amountCents: true },
+    });
+    const debits = await this.prisma.walletLedgerEntry.aggregate({
+      where: { walletId: wallet.id, type: 'DEBIT' },
+      _sum: { amountCents: true },
+    });
+    const creditSum = credits._sum.amountCents ?? 0;
+    const debitSum = debits._sum.amountCents ?? 0;
+    const ledgerNet = creditSum - debitSum;
+    const walletTotal = wallet.availableBalanceCents + wallet.heldBalanceCents;
+    const lastEntry = await this.prisma.walletLedgerEntry.findFirst({
+      where: { walletId: wallet.id },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
+    const activeHolds = await this.prisma.call.aggregate({
+      where: {
+        callerId: userId,
+        heldAmountCents: { gt: 0 },
+        status: {
+          notIn: ['ENDED', 'REJECTED', 'CANCELLED', 'TIMEOUT', 'FAILED'],
+        },
+      },
+      _sum: { heldAmountCents: true },
+    });
+    const heldFromCalls = activeHolds._sum.heldAmountCents ?? 0;
+    const issues: string[] = [];
+    if (walletTotal !== ledgerNet) {
+      issues.push('WALLET_LEDGER_MISMATCH');
+    }
+    if (lastEntry && lastEntry.balanceAfterCents !== walletTotal) {
+      issues.push('LAST_ENTRY_BALANCE_MISMATCH');
+    }
+    if (wallet.heldBalanceCents !== heldFromCalls) {
+      issues.push('HOLD_CALL_MISMATCH');
+    }
+    return {
+      userId,
+      currency: wallet.currency,
+      availableBalanceCents: wallet.availableBalanceCents,
+      heldBalanceCents: wallet.heldBalanceCents,
+      walletTotalCents: walletTotal,
+      ledgerCreditCents: creditSum,
+      ledgerDebitCents: debitSum,
+      ledgerNetCents: ledgerNet,
+      lastEntryBalanceCents: lastEntry?.balanceAfterCents ?? null,
+      heldFromActiveCallsCents: heldFromCalls,
+      ok: issues.length === 0,
+      issues,
+    };
   }
 }
