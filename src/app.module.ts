@@ -13,6 +13,7 @@ import { HealthController } from './health/health.controller';
 import { AdminModule } from './modules/admin/admin.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { BannersModule } from './modules/banners/banners.module';
 import { BlockingModule } from './modules/blocking/blocking.module';
 import { CallingModule } from './modules/calling/calling.module';
 import { DevModule } from './modules/dev/dev.module';
@@ -57,6 +58,7 @@ import { RedisModule } from './redis/redis.module';
     ReportsModule,
     AdminModule,
     AnalyticsModule,
+    BannersModule,
     DevModule,
   ],
   controllers: [HealthController],

@@ -34,6 +34,7 @@ export async function resetDatabase(): Promise<void> {
       "Payment",
       "PayoutRequest",
       "PayoutDestination",
+      "PromoBanner",
       "WalletLedgerEntry",
       "Wallet",
       "RefreshToken",

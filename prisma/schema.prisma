@@ -523,3 +523,26 @@ model NotificationPreference {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
+
+/// Home-screen promotional banners (admin-managed).
+model PromoBanner {
+  id          String    @id @default(uuid())
+  title       String
+  subtitle    String    @default("")
+  /// Optional CDN/image URL. UI falls back to brand gradient when empty.
+  imageUrl    String?
+  /// In-app deep link path, e.g. /wallet, /discover, /host/apply
+  ctaLabel    String    @default("Learn more")
+  deepLink    String?
+  /// ALL | USER | HOST
+  audience    String    @default("ALL")
+  priority    Int       @default(0)
+  isActive    Boolean   @default(true)
+  startsAt    DateTime?
+  endsAt      DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([isActive, priority(sort: Desc), createdAt(sort: Desc)])
+  @@index([audience, isActive])
+}
