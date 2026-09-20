@@ -22,14 +22,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/public.decorator';
 import { BannersService } from './banners.service';
 
-export class UpsertBannerDto {
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  @MinLength(2)
-  @MaxLength(80)
-  title?: string;
-
+class BannerFieldsDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
@@ -81,6 +74,23 @@ export class UpsertBannerDto {
   endsAt?: string;
 }
 
+export class CreateBannerDto extends BannerFieldsDto {
+  @ApiProperty()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(80)
+  title!: string;
+}
+
+export class UpdateBannerDto extends BannerFieldsDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(80)
+  title?: string;
+}
+
 @ApiTags('banners')
 @ApiBearerAuth()
 @Controller()
@@ -103,7 +113,7 @@ export class BannersController {
   @Post('admin/banners')
   create(
     @CurrentUser() actor: { userId: string },
-    @Body() body: UpsertBannerDto,
+    @Body() body: CreateBannerDto,
   ) {
     return this.banners.create(actor.userId, body);
   }
@@ -113,7 +123,7 @@ export class BannersController {
   update(
     @CurrentUser() actor: { userId: string },
     @Param('id') id: string,
-    @Body() body: UpsertBannerDto,
+    @Body() body: UpdateBannerDto,
   ) {
     return this.banners.update(actor.userId, id, body);
   }

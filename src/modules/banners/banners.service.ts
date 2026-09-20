@@ -1,11 +1,12 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { AppError, ErrorCodes } from '../../common/errors/app-error';
 import { PrismaService } from '../../database/prisma.service';
 
 const AUDIENCES = new Set(['ALL', 'USER', 'HOST']);
 
 export type BannerInput = {
-  title: string;
+  title?: string;
   subtitle?: string;
   imageUrl?: string;
   ctaLabel?: string;
@@ -15,6 +16,20 @@ export type BannerInput = {
   isActive?: boolean;
   startsAt?: string;
   endsAt?: string;
+};
+
+type BannerRow = {
+  id: string;
+  title: string;
+  subtitle: string;
+  imageUrl: string | null;
+  ctaLabel: string;
+  deepLink: string | null;
+  audience: string;
+  priority: number;
+  isActive: boolean;
+  startsAt: Date | null;
+  endsAt: Date | null;
 };
 
 @Injectable()
@@ -44,7 +59,7 @@ export class BannersService {
       orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
       take: 10,
     });
-    return rows.map((b) => this.present(b));
+    return rows.map((b: BannerRow) => this.present(b));
   }
 
   listAll() {
@@ -63,17 +78,17 @@ export class BannersService {
     }
     const data = this.normalize(input);
     const banner = await this.prisma.promoBanner.create({
-      data: data as {
-        title: string;
-        subtitle?: string;
-        imageUrl?: string | null;
-        ctaLabel?: string;
-        deepLink?: string | null;
-        audience?: string;
-        priority?: number;
-        isActive?: boolean;
-        startsAt?: Date | null;
-        endsAt?: Date | null;
+      data: {
+        title: data.title as string,
+        subtitle: (data.subtitle as string | undefined) ?? '',
+        imageUrl: (data.imageUrl as string | null | undefined) ?? null,
+        ctaLabel: (data.ctaLabel as string | undefined) ?? 'Learn more',
+        deepLink: (data.deepLink as string | null | undefined) ?? null,
+        audience: (data.audience as string | undefined) ?? 'ALL',
+        priority: (data.priority as number | undefined) ?? 0,
+        isActive: (data.isActive as boolean | undefined) ?? true,
+        startsAt: (data.startsAt as Date | null | undefined) ?? null,
+        endsAt: (data.endsAt as Date | null | undefined) ?? null,
       },
     });
     await this.audit(actorId, 'banner.create', banner.id);
@@ -85,7 +100,7 @@ export class BannersService {
     const data = this.normalize(input, { partial: true });
     const banner = await this.prisma.promoBanner.update({
       where: { id },
-      data,
+      data: data as Prisma.PromoBannerUpdateInput,
     });
     await this.audit(actorId, 'banner.update', id);
     return this.present(banner);
@@ -139,10 +154,14 @@ export class BannersService {
     }
     const data: Record<string, unknown> = {};
     if (!opts?.partial || input.title !== undefined) {
-      data.title = input.title.trim();
+      if (input.title !== undefined) {
+        data.title = input.title.trim();
+      }
     }
     if (!opts?.partial || input.subtitle !== undefined) {
-      data.subtitle = (input.subtitle ?? '').trim();
+      if (input.subtitle !== undefined) {
+        data.subtitle = input.subtitle.trim();
+      }
     }
     if (input.imageUrl !== undefined) {
       data.imageUrl = input.imageUrl?.trim() || null;
@@ -171,19 +190,7 @@ export class BannersService {
     return data;
   }
 
-  private present(b: {
-    id: string;
-    title: string;
-    subtitle: string;
-    imageUrl: string | null;
-    ctaLabel: string;
-    deepLink: string | null;
-    audience: string;
-    priority: number;
-    isActive: boolean;
-    startsAt: Date | null;
-    endsAt: Date | null;
-  }) {
+  private present(b: BannerRow) {
     return {
       id: b.id,
       title: b.title,
