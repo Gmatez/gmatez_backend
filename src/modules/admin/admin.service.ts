@@ -13,6 +13,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { PayoutsService } from '../payouts/payouts.service';
 import { HostsService } from '../hosts/hosts.service';
 import { CallingService } from '../calling/calling.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class AdminService {
@@ -24,6 +25,7 @@ export class AdminService {
     private readonly payouts: PayoutsService,
     private readonly hosts: HostsService,
     private readonly calling: CallingService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   listUsers(status?: UserStatus, q?: string) {
@@ -49,6 +51,7 @@ export class AdminService {
       select: {
         id: true,
         email: true,
+        phone: true,
         role: true,
         status: true,
         createdAt: true,
@@ -63,6 +66,7 @@ export class AdminService {
       select: {
         id: true,
         email: true,
+        phone: true,
         role: true,
         status: true,
         createdAt: true,
@@ -121,12 +125,20 @@ export class AdminService {
     return call;
   }
 
-  async setUserStatus(actorId: string, userId: string, status: UserStatus) {
+  async setUserStatus(
+    actorId: string,
+    userId: string,
+    status: UserStatus,
+    reason?: string,
+  ) {
     const user = await this.prisma.user.update({
       where: { id: userId },
       data: { status },
     });
-    await this.audit(actorId, 'user.status', 'user', userId, { status });
+    await this.audit(actorId, 'user.status', 'user', userId, {
+      status,
+      ...(reason ? { reason } : {}),
+    });
     return user;
   }
 
@@ -148,8 +160,13 @@ export class AdminService {
     return this.payouts.listAll();
   }
 
-  setPayoutStatus(actorId: string, payoutId: string, status: PayoutStatus) {
-    return this.payouts.adminSetStatus(actorId, payoutId, status);
+  setPayoutStatus(
+    actorId: string,
+    payoutId: string,
+    status: PayoutStatus,
+    failureReason?: string,
+  ) {
+    return this.payouts.adminSetStatus(actorId, payoutId, status, failureReason);
   }
 
   listReports(status?: ReportStatus) {
@@ -160,12 +177,20 @@ export class AdminService {
     });
   }
 
-  async resolveReport(actorId: string, reportId: string, status: ReportStatus) {
+  async resolveReport(
+    actorId: string,
+    reportId: string,
+    status: ReportStatus,
+    reason?: string,
+  ) {
     const report = await this.prisma.report.update({
       where: { id: reportId },
       data: { status },
     });
-    await this.audit(actorId, 'report.resolve', 'report', reportId, { status });
+    await this.audit(actorId, 'report.resolve', 'report', reportId, {
+      status,
+      ...(reason ? { reason } : {}),
+    });
     return report;
   }
 
@@ -174,6 +199,7 @@ export class AdminService {
     userId: string,
     amountCents: number,
     reason: string,
+    idempotencyKey?: string,
   ) {
     if (amountCents === 0) {
       throw new AppError(
@@ -182,21 +208,105 @@ export class AdminService {
       );
     }
     const type = amountCents > 0 ? 'CREDIT' : 'DEBIT';
+    const key = idempotencyKey
+      ? `admin-adjust:${actorId}:${idempotencyKey}`
+      : `admin:${actorId}:${userId}:${Date.now()}:${amountCents}`;
     const result = await this.wallet.applyLedger({
       userId,
       type,
       reason: 'ADMIN_ADJUSTMENT',
       amountCents: Math.abs(amountCents),
-      idempotencyKey: `admin:${actorId}:${userId}:${Date.now()}:${amountCents}`,
+      idempotencyKey: key,
       referenceType: 'admin_adjustment',
       referenceId: actorId,
       metadata: { reason },
     });
-    await this.audit(actorId, 'wallet.adjust', 'user', userId, {
-      amountCents,
-      reason,
+    if (!result.duplicate) {
+      await this.audit(actorId, 'wallet.adjust', 'user', userId, {
+        amountCents,
+        reason,
+        idempotencyKey: key,
+      });
+    }
+    return { ...result.wallet, duplicate: result.duplicate };
+  }
+
+  async sendNotification(
+    actorId: string,
+    input: {
+      userId: string;
+      title: string;
+      body: string;
+      deepLink?: string;
+      type?: string;
+      idempotencyKey: string;
+    },
+  ) {
+    const key = input.idempotencyKey.trim();
+    const existing = await this.prisma.auditLog.findFirst({
+      where: {
+        action: 'notification.send',
+        metadata: { path: ['idempotencyKey'], equals: key },
+      },
     });
-    return result.wallet;
+    if (existing) {
+      const metadata = existing.metadata as { notificationId?: string } | null;
+      return {
+        duplicate: true,
+        notificationId: metadata?.notificationId ?? null,
+      };
+    }
+    const user = await this.prisma.user.findUnique({
+      where: { id: input.userId },
+      select: { id: true, status: true },
+    });
+    if (!user) {
+      throw new AppError(
+        ErrorCodes.NOT_FOUND,
+        'User not found',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    if (user.status === 'DELETED') {
+      throw new AppError(
+        ErrorCodes.ACCOUNT_DELETED,
+        'Cannot notify a deleted account',
+        HttpStatus.CONFLICT,
+      );
+    }
+    const type = input.type?.trim() || 'system';
+    if (!/^[a-z0-9_]{2,40}$/.test(type)) {
+      throw new AppError(
+        ErrorCodes.VALIDATION_FAILED,
+        'Notification type must be 2-40 lowercase characters',
+      );
+    }
+    if (
+      input.deepLink &&
+      !/^\/(?!\/)[A-Za-z0-9/_?=&.%-]{0,119}$/.test(input.deepLink)
+    ) {
+      throw new AppError(
+        ErrorCodes.VALIDATION_FAILED,
+        'Deep link must be an in-app path',
+      );
+    }
+    const created = await this.notifications.notifyUser(
+      user.id,
+      {
+        type,
+        title: input.title.trim(),
+        body: input.body.trim(),
+        ...(input.deepLink ? { data: { deepLink: input.deepLink } } : {}),
+      },
+      { jobId: `admin-notify:${key}` },
+    );
+    await this.audit(actorId, 'notification.send', 'user', user.id, {
+      idempotencyKey: key,
+      notificationId: created?.id ?? null,
+      type,
+      suppressed: created == null,
+    });
+    return { duplicate: false, notification: created, suppressed: created == null };
   }
 
   reconcileWallet(userId: string) {

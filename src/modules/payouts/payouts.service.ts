@@ -15,6 +15,15 @@ export class PayoutsService {
     private readonly hosts: HostsService,
   ) {}
 
+  /** Authoritative payout rules. No external payout rail is integrated. */
+  rules() {
+    return {
+      minimumAmountCents: MIN_PAYOUT_CENTS,
+      payoutRailStatus: 'CONFIG_REQUIRED' as const,
+      payoutRailCode: 'PAYOUT_PROVIDER_CONFIG_REQUIRED',
+    };
+  }
+
   async request(userId: string, amountCents: number, idempotencyKey: string) {
     if (amountCents < MIN_PAYOUT_CENTS) {
       throw new AppError(
