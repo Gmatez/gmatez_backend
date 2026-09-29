@@ -18,6 +18,7 @@ import { CALLING_PROVIDER } from '../../providers/calling/calling.tokens';
 import type { CallingProvider } from '../../providers/calling/calling-provider';
 import { BlockingService } from '../blocking/blocking.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { shareBpsForSettlement } from '../admin/pricing';
 import { WalletService } from '../wallet/wallet.service';
 import {
   canTransition,
@@ -120,10 +121,16 @@ export class CallingService implements OnModuleInit {
       );
     }
     const host = await this.hosts.assertCallable(calleeId, callType);
-    const rate =
+    const pricing = await this.prisma.platformPricing.findUnique({
+      where: { id: 'default' },
+    });
+    const hostRate =
       callType === CallType.VIDEO
         ? host.videoRatePerMinuteCents
         : host.voiceRatePerMinuteCents;
+    const rate = pricing?.userRatePerMinuteCents ?? hostRate;
+    const shareBps =
+      pricing?.hostShareBps ?? this.config.get('CREATOR_SHARE_BPS');
     const minHold = Math.max(rate, 1);
     const wallet = await this.wallet.getByUserId(callerId);
     if (wallet.availableBalanceCents < minHold) {
@@ -173,6 +180,7 @@ export class CallingService implements OnModuleInit {
           provider: this.provider.name,
           providerSessionId: `pending_${crypto.randomUUID()}`,
           ratePerMinuteCents: rate,
+          creatorShareBps: shareBps,
           ...(idempotencyKey && idempotencyKey.length >= 8
             ? { idempotencyKey }
             : {}),
@@ -714,7 +722,10 @@ export class CallingService implements OnModuleInit {
       fresh.ratePerMinuteCents,
       billedSeconds,
     );
-    const creatorShareBps = this.config.get('CREATOR_SHARE_BPS');
+    const creatorShareBps = shareBpsForSettlement(
+      fresh.creatorShareBps,
+      this.config.get('CREATOR_SHARE_BPS'),
+    );
     await this.prisma.call.update({
       where: { id: call.id },
       data: { billedSeconds, billedAmountCents: amount },
@@ -788,7 +799,10 @@ export class CallingService implements OnModuleInit {
       );
     }
     const amount = call.billedAmountCents;
-    const creatorShareBps = this.config.get('CREATOR_SHARE_BPS');
+    const creatorShareBps = shareBpsForSettlement(
+      call.creatorShareBps,
+      this.config.get('CREATOR_SHARE_BPS'),
+    );
     const earningCents = computeCreatorEarningCents(amount, creatorShareBps);
 
     await this.wallet.applyLedger({
@@ -971,7 +985,10 @@ export class CallingService implements OnModuleInit {
   ) {
     const caller = profiles.get(call.callerId);
     const callee = profiles.get(call.calleeId);
-    const creatorShareBps = this.config.get('CREATOR_SHARE_BPS');
+    const creatorShareBps = shareBpsForSettlement(
+      call.creatorShareBps,
+      this.config.get('CREATOR_SHARE_BPS'),
+    );
     const creatorEarningCents = call.billedAmountCents
       ? computeCreatorEarningCents(call.billedAmountCents, creatorShareBps)
       : 0;

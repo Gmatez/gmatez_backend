@@ -14,6 +14,7 @@ import {
   REQUIRED_HOST_AGREEMENTS,
 } from './host-agreements';
 import { HostCompletenessService } from './host-completeness.service';
+import { operatingModeForHostStatus } from './operating-mode';
 
 export type HostAgreementAcceptanceInput = {
   agreementType: string;
@@ -563,6 +564,7 @@ export class HostsService {
           select: {
             id: true,
             email: true,
+            phone: true,
             status: true,
             profile: true,
           },
@@ -643,6 +645,7 @@ export class HostsService {
       await tx.profile.update({
         where: { userId },
         data: {
+          operatingMode: operatingModeForHostStatus(status),
           isDiscoverable: status === 'ACTIVE' && next.availability === 'ONLINE',
         },
       });

@@ -32,6 +32,25 @@ export class WalletService {
 
   constructor(private readonly prisma: PrismaService) {}
 
+  async ensureForUser(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, status: true },
+    });
+    if (!user || user.status === 'DELETED') {
+      throw new AppError(
+        ErrorCodes.NOT_FOUND,
+        'User not found',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    return this.prisma.wallet.upsert({
+      where: { userId },
+      update: {},
+      create: { userId, currency: 'USD' },
+    });
+  }
+
   async getByUserId(userId: string) {
     const wallet = await this.prisma.wallet.findUnique({ where: { userId } });
     if (!wallet) {

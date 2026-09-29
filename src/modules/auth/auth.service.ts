@@ -14,6 +14,7 @@ import { maskPhone, normalizePhoneE164 } from '../../common/phone/phone.util';
 import { RateLimitService } from '../../common/rate-limit/rate-limit.service';
 import { AppConfigService } from '../../config/app-config';
 import { PrismaService } from '../../database/prisma.service';
+import { nextLastActiveAt } from '../users/activity';
 import { RedisService } from '../../redis/redis.service';
 import {
   OTP_DELIVERY_PROVIDER,
@@ -102,6 +103,12 @@ export class AuthService {
       );
     }
     this.assertAccountEligible(user.status);
+    await this.prisma.profile.updateMany({
+      where: { userId: user.id },
+      data: {
+        lastActiveAt: nextLastActiveAt(new Date(0), 'login', new Date()),
+      },
+    });
     this.logger.log({ userId: user.id }, 'auth.login');
     return this.issueSession(user.id, user.role);
   }

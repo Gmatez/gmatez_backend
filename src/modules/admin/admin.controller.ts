@@ -2,10 +2,12 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Param,
   Patch,
   Post,
   Query,
+  StreamableFile,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiProperty, ApiTags } from '@nestjs/swagger';
 import {
@@ -17,15 +19,18 @@ import {
 } from '@prisma/client';
 import {
   IsEnum,
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
   IsUUID,
   MaxLength,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/public.decorator';
+import { HostDocumentsService } from '../hosts/host-documents.service';
 import { AdminReadService } from './admin-read.service';
 import { AdminService } from './admin.service';
 
@@ -97,10 +102,51 @@ export class RefundCallDto {
   reason?: string;
 }
 
-export class SendNotificationDto {
+export class HostImageDto {
   @ApiProperty()
+  @IsString()
+  mime!: string;
+
+  @ApiProperty()
+  @IsString()
+  dataBase64!: string;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  idProofType?: string;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  @MaxLength(12)
+  idProofLast4?: string;
+}
+
+export class SetPricingDto {
+  @ApiProperty()
+  @IsInt()
+  userRatePerMinuteCents!: number;
+
+  @ApiProperty()
+  @IsInt()
+  hostEarningPerMinuteCents!: number;
+}
+
+export class SendNotificationDto {
+  @ApiProperty({ required: false, enum: ['USER', 'ALL_USERS', 'ALL_HOSTS'] })
+  @IsOptional()
+  @IsIn(['USER', 'ALL_USERS', 'ALL_HOSTS'])
+  audience?: 'USER' | 'ALL_USERS' | 'ALL_HOSTS';
+
+  @ApiProperty({ required: false })
+  @ValidateIf(
+    (value: SendNotificationDto) =>
+      !value.audience || value.audience === 'USER',
+  )
   @IsUUID()
-  userId!: string;
+  userId?: string;
 
   @ApiProperty()
   @IsString()
@@ -171,6 +217,7 @@ export class AdminController {
   constructor(
     private readonly admin: AdminService,
     private readonly read: AdminReadService,
+    private readonly documents: HostDocumentsService,
   ) {}
 
   @Get('overview')
@@ -218,7 +265,10 @@ export class AdminController {
     if (query.page) {
       return this.read.listUsers(query);
     }
-    return this.admin.listUsers(query.status as UserStatus | undefined, query.q);
+    return this.admin.listUsers(
+      query.status as UserStatus | undefined,
+      query.q,
+    );
   }
 
   @Get('users/:id')
@@ -299,7 +349,13 @@ export class AdminController {
 
   @Get('calls')
   calls(@Query() query: Record<string, string | undefined>) {
-    if (query.page || query.status || query.callType || query.settlement || query.q) {
+    if (
+      query.page ||
+      query.status ||
+      query.callType ||
+      query.settlement ||
+      query.q
+    ) {
       return this.read.listCalls(query);
     }
     return this.admin.listCalls();
@@ -403,6 +459,60 @@ export class AdminController {
   @Get('notifications')
   notifications(@Query() query: Record<string, string | undefined>) {
     return this.read.listNotifications(query);
+  }
+
+  @Post('hosts/:id/id-proof')
+  saveIdProof(
+    @CurrentUser() actor: { userId: string },
+    @Param('id') id: string,
+    @Body() body: HostImageDto,
+  ) {
+    return this.documents.saveIdProof(actor.userId, id, {
+      mime: body.mime,
+      dataBase64: body.dataBase64,
+      idProofType: body.idProofType || 'ID',
+      idProofLast4: body.idProofLast4,
+    });
+  }
+
+  @Get('hosts/:id/id-proof')
+  @Header('Cache-Control', 'private, no-store')
+  async idProof(@Param('id') id: string) {
+    const file = await this.documents.read(id, 'id-proof');
+    return new StreamableFile(file.data, { type: file.mime });
+  }
+
+  @Post('hosts/:id/avatar')
+  saveAvatar(
+    @CurrentUser() actor: { userId: string },
+    @Param('id') id: string,
+    @Body() body: HostImageDto,
+  ) {
+    return this.documents.saveAvatar(actor.userId, id, body);
+  }
+
+  @Get('hosts/:id/avatar')
+  @Header('Cache-Control', 'private, no-store')
+  async avatar(@Param('id') id: string) {
+    const file = await this.documents.read(id, 'avatar');
+    return new StreamableFile(file.data, { type: file.mime });
+  }
+
+  @Get('pricing')
+  pricing() {
+    return this.admin.getPricing();
+  }
+
+  @Patch('pricing')
+  setPricing(
+    @CurrentUser() actor: { userId: string },
+    @Body() body: SetPricingDto,
+  ) {
+    return this.admin.setPricing(
+      actor.userId,
+      body.userRatePerMinuteCents,
+      body.hostEarningPerMinuteCents,
+    );
   }
 
   @Post('notifications')

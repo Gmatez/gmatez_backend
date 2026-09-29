@@ -22,6 +22,9 @@ prisma/*.db
 .idea
 .vscode
 
+# private host documents
+storage/private
+
 # test
 tmp
 .turbo

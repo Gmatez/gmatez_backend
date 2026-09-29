@@ -3,6 +3,7 @@ import { AppError, ErrorCodes } from '../../common/errors/app-error';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { toPublicProfile } from '../profiles/profile.presenter';
+import { nextLastActiveAt } from './activity';
 
 @Injectable()
 export class UsersService {
@@ -121,9 +122,20 @@ export class UsersService {
 
   async heartbeat(userId: string): Promise<void> {
     await this.redis.client.set(`presence:${userId}`, '1', 'EX', 60);
+    const profile = await this.prisma.profile.findUnique({
+      where: { userId },
+      select: { lastActiveAt: true },
+    });
+    if (!profile) return;
     await this.prisma.profile.update({
       where: { userId },
-      data: { lastActiveAt: new Date() },
+      data: {
+        lastActiveAt: nextLastActiveAt(
+          profile.lastActiveAt,
+          'heartbeat',
+          new Date(),
+        ),
+      },
     });
   }
 

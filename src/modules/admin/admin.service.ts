@@ -14,6 +14,7 @@ import { PayoutsService } from '../payouts/payouts.service';
 import { HostsService } from '../hosts/hosts.service';
 import { CallingService } from '../calling/calling.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { splitMinuteRate } from './pricing';
 
 @Injectable()
 export class AdminService {
@@ -166,7 +167,12 @@ export class AdminService {
     status: PayoutStatus,
     failureReason?: string,
   ) {
-    return this.payouts.adminSetStatus(actorId, payoutId, status, failureReason);
+    return this.payouts.adminSetStatus(
+      actorId,
+      payoutId,
+      status,
+      failureReason,
+    );
   }
 
   listReports(status?: ReportStatus) {
@@ -207,6 +213,7 @@ export class AdminService {
         'Adjustment cannot be zero',
       );
     }
+    await this.wallet.ensureForUser(userId);
     const type = amountCents > 0 ? 'CREDIT' : 'DEBIT';
     const key = idempotencyKey
       ? `admin-adjust:${actorId}:${idempotencyKey}`
@@ -234,7 +241,8 @@ export class AdminService {
   async sendNotification(
     actorId: string,
     input: {
-      userId: string;
+      userId?: string;
+      audience?: 'USER' | 'ALL_USERS' | 'ALL_HOSTS';
       title: string;
       body: string;
       deepLink?: string;
@@ -243,6 +251,33 @@ export class AdminService {
     },
   ) {
     const key = input.idempotencyKey.trim();
+    const type = input.type?.trim() || 'system';
+    if (!/^[a-z0-9_]{2,40}$/.test(type)) {
+      throw new AppError(
+        ErrorCodes.VALIDATION_FAILED,
+        'Notification type must be 2-40 lowercase characters',
+      );
+    }
+    if (
+      input.deepLink &&
+      !/^\/(?!\/)[A-Za-z0-9/_?=&.%-]{0,119}$/.test(input.deepLink)
+    ) {
+      throw new AppError(
+        ErrorCodes.VALIDATION_FAILED,
+        'Deep link must be an in-app path',
+      );
+    }
+    if (input.audience === 'ALL_USERS' || input.audience === 'ALL_HOSTS') {
+      return this.sendAudience(actorId, {
+        ...input,
+        audience: input.audience,
+        type,
+        idempotencyKey: key,
+      });
+    }
+    if (!input.userId) {
+      throw new AppError(ErrorCodes.VALIDATION_FAILED, 'userId is required');
+    }
     const existing = await this.prisma.auditLog.findFirst({
       where: {
         action: 'notification.send',
@@ -274,22 +309,6 @@ export class AdminService {
         HttpStatus.CONFLICT,
       );
     }
-    const type = input.type?.trim() || 'system';
-    if (!/^[a-z0-9_]{2,40}$/.test(type)) {
-      throw new AppError(
-        ErrorCodes.VALIDATION_FAILED,
-        'Notification type must be 2-40 lowercase characters',
-      );
-    }
-    if (
-      input.deepLink &&
-      !/^\/(?!\/)[A-Za-z0-9/_?=&.%-]{0,119}$/.test(input.deepLink)
-    ) {
-      throw new AppError(
-        ErrorCodes.VALIDATION_FAILED,
-        'Deep link must be an in-app path',
-      );
-    }
     const created = await this.notifications.notifyUser(
       user.id,
       {
@@ -306,7 +325,77 @@ export class AdminService {
       type,
       suppressed: created == null,
     });
-    return { duplicate: false, notification: created, suppressed: created == null };
+    return {
+      duplicate: false,
+      notification: created,
+      suppressed: created == null,
+      delivery: process.env.FIREBASE_SERVICE_ACCOUNT_JSON
+        ? 'QUEUED'
+        : 'CONFIG_REQUIRED',
+    };
+  }
+
+  private async sendAudience(
+    actorId: string,
+    input: {
+      audience: 'ALL_USERS' | 'ALL_HOSTS';
+      title: string;
+      body: string;
+      deepLink?: string;
+      type?: string;
+      idempotencyKey: string;
+    },
+  ) {
+    const existing = await this.prisma.auditLog.findFirst({
+      where: {
+        action: 'notification.send',
+        metadata: { path: ['idempotencyKey'], equals: input.idempotencyKey },
+      },
+    });
+    if (existing) {
+      return {
+        duplicate: true,
+        queued: 0,
+        delivery: process.env.FIREBASE_SERVICE_ACCOUNT_JSON
+          ? 'QUEUED'
+          : 'CONFIG_REQUIRED',
+      };
+    }
+    const users = await this.prisma.user.findMany({
+      where: {
+        status: 'ACTIVE',
+        ...(input.audience === 'ALL_HOSTS'
+          ? { hostProfile: { status: 'ACTIVE' } }
+          : { role: { in: ['USER', 'ADMIN'] } }),
+      },
+      select: { id: true },
+      take: 200,
+    });
+    let queued = 0;
+    for (const user of users) {
+      const created = await this.notifications.notifyUser(
+        user.id,
+        {
+          type: input.type || 'system',
+          title: input.title.trim(),
+          body: input.body.trim(),
+          ...(input.deepLink ? { data: { deepLink: input.deepLink } } : {}),
+        },
+        { jobId: `admin-notify:${input.idempotencyKey}:${user.id}` },
+      );
+      if (created) queued += 1;
+    }
+    await this.audit(actorId, 'notification.send', 'audience', input.audience, {
+      idempotencyKey: input.idempotencyKey,
+      queued,
+    });
+    return {
+      duplicate: false,
+      queued,
+      delivery: process.env.FIREBASE_SERVICE_ACCOUNT_JSON
+        ? 'QUEUED'
+        : 'CONFIG_REQUIRED',
+    };
   }
 
   reconcileWallet(userId: string) {
@@ -374,6 +463,66 @@ export class AdminService {
       verificationStatus,
       internalNote,
     );
+  }
+
+  getPricing() {
+    return this.prisma.platformPricing.findUnique({ where: { id: 'default' } });
+  }
+
+  async setPricing(
+    actorId: string,
+    userRatePerMinuteCents: number,
+    hostEarningPerMinuteCents: number,
+  ) {
+    let split;
+    try {
+      split = splitMinuteRate(
+        userRatePerMinuteCents,
+        hostEarningPerMinuteCents,
+      );
+    } catch (error) {
+      throw new AppError(
+        ErrorCodes.VALIDATION_FAILED,
+        error instanceof Error ? error.message : 'Invalid pricing',
+      );
+    }
+    const previous = await this.prisma.platformPricing.findUnique({
+      where: { id: 'default' },
+    });
+    const next = await this.prisma.platformPricing.upsert({
+      where: { id: 'default' },
+      update: {
+        userRatePerMinuteCents: split.userRatePerMinuteCents,
+        hostEarningPerMinuteCents: split.hostEarningPerMinuteCents,
+        hostShareBps: split.hostShareBps,
+        updatedById: actorId,
+      },
+      create: {
+        id: 'default',
+        userRatePerMinuteCents: split.userRatePerMinuteCents,
+        hostEarningPerMinuteCents: split.hostEarningPerMinuteCents,
+        hostShareBps: split.hostShareBps,
+        updatedById: actorId,
+      },
+    });
+    await this.audit(actorId, 'pricing.update', 'platform_pricing', 'default', {
+      old: previous
+        ? {
+            userRatePerMinuteCents: previous.userRatePerMinuteCents,
+            hostEarningPerMinuteCents: previous.hostEarningPerMinuteCents,
+            hostShareBps: previous.hostShareBps,
+          }
+        : null,
+      new: {
+        userRatePerMinuteCents: next.userRatePerMinuteCents,
+        hostEarningPerMinuteCents: next.hostEarningPerMinuteCents,
+        hostShareBps: next.hostShareBps,
+      },
+    });
+    return {
+      ...next,
+      platformPerMinuteCents: split.platformPerMinuteCents,
+    };
   }
 
   private async audit(
