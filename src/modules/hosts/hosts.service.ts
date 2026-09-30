@@ -14,6 +14,7 @@ import {
   REQUIRED_HOST_AGREEMENTS,
 } from './host-agreements';
 import { HostCompletenessService } from './host-completeness.service';
+import { HostDocumentsService } from './host-documents.service';
 import { operatingModeForHostStatus } from './operating-mode';
 
 export type HostAgreementAcceptanceInput = {
@@ -54,6 +55,7 @@ export class HostsService {
     private readonly realtime: RealtimeEmitter,
     private readonly notifications: NotificationsService,
     private readonly completeness: HostCompletenessService,
+    private readonly documents: HostDocumentsService,
   ) {}
 
   async getMe(userId: string) {
@@ -234,6 +236,8 @@ export class HostsService {
     const videoRate = this.clampRate(
       input.videoRatePerMinuteCents ?? voiceRate + 50,
     );
+    const documents = await this.documents.requireApplicationDocuments(userId);
+    const identityLast4 = documents.identityCardNumber.replace(/\D/g, '').slice(-4);
 
     const host = await this.prisma.$transaction(async (tx) => {
       const next = await tx.hostProfile.upsert({
@@ -253,8 +257,15 @@ export class HostsService {
           internalNote: null,
           reviewedAt: null,
           reviewedById: null,
-          // Self-attestation only — external KYC remains CONFIG_REQUIRED.
           verificationStatus: 'NOT_REQUIRED',
+          identityCardNumber: documents.identityCardNumber,
+          identityFrontMime: documents.identityFrontMime,
+          identityBackMime: documents.identityBackMime,
+          profileImageMime: documents.profileImageMime,
+          idProofType: 'IDENTITY_CARD',
+          idProofLast4: identityLast4 || null,
+          idProofMime: documents.identityFrontMime,
+          idProofUpdatedAt: new Date(),
         },
         create: {
           userId,
@@ -266,6 +277,14 @@ export class HostsService {
           voiceRatePerMinuteCents: voiceRate,
           videoRatePerMinuteCents: videoRate,
           verificationStatus: 'NOT_REQUIRED',
+          identityCardNumber: documents.identityCardNumber,
+          identityFrontMime: documents.identityFrontMime,
+          identityBackMime: documents.identityBackMime,
+          profileImageMime: documents.profileImageMime,
+          idProofType: 'IDENTITY_CARD',
+          idProofLast4: identityLast4 || null,
+          idProofMime: documents.identityFrontMime,
+          idProofUpdatedAt: new Date(),
         },
       });
       await tx.profile.update({

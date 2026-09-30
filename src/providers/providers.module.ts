@@ -8,6 +8,7 @@ import { PAYMENT_PROVIDER } from './payments/payment.tokens';
 import type { PaymentProvider } from './payments/payment-provider';
 import { MockPaymentProvider } from './payments/mock-payment.provider';
 import { StripePaymentProvider } from './payments/stripe-payment.provider';
+import { RazorpayPaymentProvider } from './payments/razorpay-payment.provider';
 import { PUSH_PROVIDER } from './messaging/push.tokens';
 import type { PushProvider } from './messaging/push-provider';
 import { MockPushProvider } from './messaging/mock-push.provider';
@@ -29,6 +30,7 @@ import { RateLimitService } from '../common/rate-limit/rate-limit.service';
     AgoraCallingProvider,
     MockPaymentProvider,
     StripePaymentProvider,
+    RazorpayPaymentProvider,
     MockPushProvider,
     FcmPushProvider,
     MockOtpDeliveryProvider,
@@ -50,9 +52,23 @@ import { RateLimitService } from '../common/rate-limit/rate-limit.service';
         config: AppConfigService,
         mock: MockPaymentProvider,
         stripe: StripePaymentProvider,
-      ): PaymentProvider =>
-        config.get('PAYMENT_PROVIDER') === 'stripe' ? stripe : mock,
-      inject: [AppConfigService, MockPaymentProvider, StripePaymentProvider],
+        razorpay: RazorpayPaymentProvider,
+      ): PaymentProvider => {
+        const selected = config.get('PAYMENT_PROVIDER');
+        if (selected === 'stripe') {
+          return stripe;
+        }
+        if (selected === 'razorpay') {
+          return razorpay;
+        }
+        return mock;
+      },
+      inject: [
+        AppConfigService,
+        MockPaymentProvider,
+        StripePaymentProvider,
+        RazorpayPaymentProvider,
+      ],
     },
     {
       provide: PUSH_PROVIDER,

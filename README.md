@@ -53,9 +53,10 @@ k6 run load/health-and-discovery.js
 
 ## Money and calls
 
-- Amounts are integer cents.
+- Amounts are integer minor units. Razorpay uses INR paise (₹500 = 50000). Mock and Stripe stay on USD cents.
 - Wallet history is an immutable ledger. Available/held balances are updated in the same transaction as ledger or hold changes.
-- Payment webhooks are HMAC-verified and idempotent.
+- Razorpay webhooks use `X-Razorpay-Signature` over the raw body and `RAZORPAY_WEBHOOK_SECRET`. Mock webhooks still use `x-provider-signature` and `PAYMENT_WEBHOOK_SECRET`. Both paths are idempotent. See `docs/architecture/razorpay.md`.
+- Host payout `COMPLETED` is rejected until an external payout rail exists. RazorpayX is CONFIG_REQUIRED.
 - Call duration and cost are computed from server timestamps.
 
 Development-only helpers (disabled in production):

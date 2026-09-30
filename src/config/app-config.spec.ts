@@ -185,4 +185,34 @@ describe('loadConfig production safety', () => {
     });
     expect(cfg.PAYMENT_PROVIDER).toBe('mock');
   });
+
+  it('rejects razorpay without credentials in every environment', () => {
+    expect(() =>
+      loadConfig({
+        ...baseEnv,
+        NODE_ENV: 'production',
+        ...smsEnv,
+        CALLING_PROVIDER: 'agora',
+        PAYMENT_PROVIDER: 'razorpay',
+        PUSH_PROVIDER: 'fcm',
+        AGORA_APP_ID: 'app',
+        AGORA_APP_CERTIFICATE: 'cert',
+        FIREBASE_SERVICE_ACCOUNT_JSON: '{}',
+      }),
+    ).toThrow(/RAZORPAY_KEY_ID/);
+  });
+
+  it('accepts razorpay test credentials and defaults the book currency to INR', () => {
+    const cfg = loadConfig({
+      ...baseEnv,
+      NODE_ENV: 'development',
+      PAYMENT_PROVIDER: 'razorpay',
+      RAZORPAY_KEY_ID: 'rzp_test_public',
+      RAZORPAY_KEY_SECRET: 'test-secret',
+      RAZORPAY_WEBHOOK_SECRET: 'whsec-test',
+    });
+    expect(cfg.PAYMENT_PROVIDER).toBe('razorpay');
+    expect(cfg.PLATFORM_CURRENCY).toBe('INR');
+    expect(cfg.RAZORPAY_KEY_SECRET).toBe('test-secret');
+  });
 });

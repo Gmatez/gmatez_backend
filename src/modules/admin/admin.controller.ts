@@ -33,6 +33,7 @@ import { Roles } from '../../common/decorators/public.decorator';
 import { HostDocumentsService } from '../hosts/host-documents.service';
 import { AdminReadService } from './admin-read.service';
 import { AdminService } from './admin.service';
+import { PaymentsService } from '../payments/payments.service';
 
 export class SetUserStatusDto {
   @ApiProperty({ enum: UserStatus })
@@ -218,6 +219,7 @@ export class AdminController {
     private readonly admin: AdminService,
     private readonly read: AdminReadService,
     private readonly documents: HostDocumentsService,
+    private readonly paymentOps: PaymentsService,
   ) {}
 
   @Get('overview')
@@ -377,6 +379,19 @@ export class AdminController {
   @Get('payments/:id')
   payment(@Param('id') id: string) {
     return this.read.getPayment(id);
+  }
+
+  @Post('payments/:id/reconcile')
+  reconcilePayment(@Param('id') id: string) {
+    return this.paymentOps.reconcile(id);
+  }
+
+  @Post('payments/:id/refund')
+  refundPayment(
+    @CurrentUser() actor: { userId: string },
+    @Param('id') id: string,
+  ) {
+    return this.paymentOps.refundPayment(actor.userId, id);
   }
 
   @Get('payouts')

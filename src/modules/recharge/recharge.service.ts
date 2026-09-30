@@ -24,6 +24,16 @@ export class RechargeService {
     });
   }
 
+  async userCallRate() {
+    const pricing = await this.prisma.platformPricing.findUnique({
+      where: { id: 'default' },
+      select: { userRatePerMinuteCents: true },
+    });
+    return {
+      userRatePerMinuteCents: pricing?.userRatePerMinuteCents ?? null,
+    };
+  }
+
   listAll() {
     return this.prisma.rechargePlan.findMany({
       orderBy: [{ displayOrder: 'asc' }, { createdAt: 'desc' }],

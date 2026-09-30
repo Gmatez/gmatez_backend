@@ -2,17 +2,9 @@ import { HttpStatus, Injectable } from '@nestjs/common';
 import {
   CallStatus,
   CallType,
-  HostAvailability,
-  HostStatus,
-  HostVerificationStatus,
   LedgerReason,
-  NotificationStatus,
-  PaymentStatus,
   PayoutStatus,
   Prisma,
-  ReportReason,
-  ReportStatus,
-  UserStatus,
 } from '@prisma/client';
 import { AppConfigService } from '../../config/app-config';
 import { PrismaService } from '../../database/prisma.service';
@@ -50,7 +42,12 @@ export type PageResult<T> = {
 };
 
 const USER_STATUSES = ['ACTIVE', 'SUSPENDED', 'DELETED'] as const;
-const HOST_STATUSES = ['PENDING_REVIEW', 'ACTIVE', 'SUSPENDED', 'REJECTED'] as const;
+const HOST_STATUSES = [
+  'PENDING_REVIEW',
+  'ACTIVE',
+  'SUSPENDED',
+  'REJECTED',
+] as const;
 const HOST_AVAILABILITY = ['OFFLINE', 'ONLINE', 'BUSY', 'PAUSED'] as const;
 const CALL_STATUSES = [
   'INITIATED',
@@ -78,7 +75,12 @@ const PAYOUT_STATUSES = [
   'FAILED',
   'REJECTED',
 ] as const;
-const REPORT_STATUSES = ['OPEN', 'UNDER_REVIEW', 'RESOLVED', 'DISMISSED'] as const;
+const REPORT_STATUSES = [
+  'OPEN',
+  'UNDER_REVIEW',
+  'RESOLVED',
+  'DISMISSED',
+] as const;
 
 const profileName = {
   select: { displayName: true, avatarUrl: true, lastActiveAt: true },
@@ -119,7 +121,10 @@ export class AdminReadService {
       onlineHosts,
     ] = await Promise.all([
       this.prisma.user.groupBy({ by: ['status'], _count: { _all: true } }),
-      this.prisma.hostProfile.groupBy({ by: ['status'], _count: { _all: true } }),
+      this.prisma.hostProfile.groupBy({
+        by: ['status'],
+        _count: { _all: true },
+      }),
       this.prisma.hostProfile.groupBy({
         by: ['availability'],
         _count: { _all: true },
@@ -173,14 +178,22 @@ export class AdminReadService {
       hosts: {
         total: sumValues(hosts),
         byStatus: hosts,
-        byAvailability: this.countRecord(hostsByAvailability, HOST_AVAILABILITY),
+        byAvailability: this.countRecord(
+          hostsByAvailability,
+          HOST_AVAILABILITY,
+        ),
         online: onlineHosts,
       },
       calls: {
         total: sumValues(calls),
         byStatus: calls,
         byType: this.countRecord(callsByType, ['VOICE', 'VIDEO'] as const),
-        active: calls.INITIATED + calls.RINGING + calls.ACCEPTED + calls.CONNECTING + calls.CONNECTED,
+        active:
+          calls.INITIATED +
+          calls.RINGING +
+          calls.ACCEPTED +
+          calls.CONNECTING +
+          calls.CONNECTED,
       },
       payments: {
         byStatus: this.countRecord(paymentsByStatus, PAYMENT_STATUSES),
@@ -404,114 +417,118 @@ export class AdminReadService {
     }
     const uuid = isUuid(q) ? q : undefined;
     const contains = { contains: q, mode: 'insensitive' as const };
-    const [users, hosts, calls, payments, payouts, reports] = await Promise.all([
-      this.prisma.user.findMany({
-        where: {
-          OR: [
-            ...(uuid ? [{ id: uuid }] : []),
-            { email: contains },
-            { phone: contains },
-            { profile: { displayName: contains } },
-          ],
-        },
-        take: 8,
-        orderBy: { createdAt: 'desc' },
-        select: {
-          id: true,
-          email: true,
-          phone: true,
-          status: true,
-          profile: { select: { displayName: true } },
-        },
-      }),
-      this.prisma.hostProfile.findMany({
-        where: {
-          OR: [
-            ...(uuid ? [{ userId: uuid }] : []),
-            { user: { email: contains } },
-            { user: { phone: contains } },
-            { user: { profile: { displayName: contains } } },
-          ],
-        },
-        take: 8,
-        orderBy: { updatedAt: 'desc' },
-        select: {
-          userId: true,
-          status: true,
-          availability: true,
-          user: {
-            select: {
-              phone: true,
-              profile: { select: { displayName: true } },
+    const [users, hosts, calls, payments, payouts, reports] = await Promise.all(
+      [
+        this.prisma.user.findMany({
+          where: {
+            OR: [
+              ...(uuid ? [{ id: uuid }] : []),
+              { email: contains },
+              { phone: contains },
+              { profile: { displayName: contains } },
+            ],
+          },
+          take: 8,
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            email: true,
+            phone: true,
+            status: true,
+            profile: { select: { displayName: true } },
+          },
+        }),
+        this.prisma.hostProfile.findMany({
+          where: {
+            OR: [
+              ...(uuid ? [{ userId: uuid }] : []),
+              { user: { email: contains } },
+              { user: { phone: contains } },
+              { user: { profile: { displayName: contains } } },
+            ],
+          },
+          take: 8,
+          orderBy: { updatedAt: 'desc' },
+          select: {
+            userId: true,
+            status: true,
+            availability: true,
+            user: {
+              select: {
+                phone: true,
+                profile: { select: { displayName: true } },
+              },
             },
           },
-        },
-      }),
-      uuid
-        ? this.prisma.call.findMany({
-            where: {
-              OR: [{ id: uuid }, { callerId: uuid }, { calleeId: uuid }],
-            },
-            take: 8,
-            orderBy: { createdAt: 'desc' },
-            select: {
-              id: true,
-              status: true,
-              callType: true,
-              createdAt: true,
-            },
-          })
-        : Promise.resolve([]),
-      this.prisma.payment.findMany({
-        where: {
-          OR: [
-            ...(uuid ? [{ id: uuid }] : []),
-            { providerPaymentId: contains },
-          ],
-        },
-        take: 8,
-        orderBy: { createdAt: 'desc' },
-        select: {
-          id: true,
-          status: true,
-          amountCents: true,
-          currency: true,
-          provider: true,
-          createdAt: true,
-        },
-      }),
-      uuid
-        ? this.prisma.payoutRequest.findMany({
-            where: { OR: [{ id: uuid }, { userId: uuid }] },
-            take: 8,
-            select: {
-              id: true,
-              status: true,
-              amountCents: true,
-              userId: true,
-              createdAt: true,
-            },
-          })
-        : Promise.resolve([]),
-      uuid
-        ? this.prisma.report.findMany({
-            where: {
-              OR: [{ id: uuid }, { reporterId: uuid }, { reportedId: uuid }],
-            },
-            take: 8,
-            select: {
-              id: true,
-              status: true,
-              reason: true,
-              createdAt: true,
-            },
-          })
-        : Promise.resolve([]),
-    ]);
+        }),
+        uuid
+          ? this.prisma.call.findMany({
+              where: {
+                OR: [{ id: uuid }, { callerId: uuid }, { calleeId: uuid }],
+              },
+              take: 8,
+              orderBy: { createdAt: 'desc' },
+              select: {
+                id: true,
+                status: true,
+                callType: true,
+                createdAt: true,
+              },
+            })
+          : Promise.resolve([]),
+        this.prisma.payment.findMany({
+          where: {
+            OR: [
+              ...(uuid ? [{ id: uuid }] : []),
+              { providerPaymentId: contains },
+            ],
+          },
+          take: 8,
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            status: true,
+            amountCents: true,
+            currency: true,
+            provider: true,
+            createdAt: true,
+          },
+        }),
+        uuid
+          ? this.prisma.payoutRequest.findMany({
+              where: { OR: [{ id: uuid }, { userId: uuid }] },
+              take: 8,
+              select: {
+                id: true,
+                status: true,
+                amountCents: true,
+                userId: true,
+                createdAt: true,
+              },
+            })
+          : Promise.resolve([]),
+        uuid
+          ? this.prisma.report.findMany({
+              where: {
+                OR: [{ id: uuid }, { reporterId: uuid }, { reportedId: uuid }],
+              },
+              take: 8,
+              select: {
+                id: true,
+                status: true,
+                reason: true,
+                createdAt: true,
+              },
+            })
+          : Promise.resolve([]),
+      ],
+    );
     return { users, hosts, calls, payments, payouts, reports };
   }
 
-  async listUsers(query: Record<string, string | undefined>): Promise<PageResult<unknown>> {
+  async listUsers(
+    query: Record<string, string | undefined>,
+  ): Promise<PageResult<unknown>> {
     const page = this.page(query.page, query.pageSize);
     const status = this.parse(() =>
       assertOneOf(query.status, USER_STATUSES, 'status'),
@@ -521,7 +538,7 @@ export class AdminReadService {
     const createdAt = createdAtRange(from, to);
     const q = query.q?.trim();
     const where: Prisma.UserWhereInput = {
-      ...(status ? { status: status as UserStatus } : {}),
+      ...(status ? { status: status } : {}),
       ...(createdAt ? { createdAt } : {}),
       ...(q
         ? {
@@ -538,7 +555,12 @@ export class AdminReadService {
           }
         : {}),
     };
-    const sort = this.sort(query.sort, query.dir, ['createdAt', 'email', 'status'] as const, 'createdAt');
+    const sort = this.sort(
+      query.sort,
+      query.dir,
+      ['createdAt', 'email', 'status'] as const,
+      'createdAt',
+    );
     const [total, items] = await this.prisma.$transaction([
       this.prisma.user.count({ where }),
       this.prisma.user.findMany({
@@ -555,7 +577,11 @@ export class AdminReadService {
           createdAt: true,
           profile: profileName,
           hostProfile: {
-            select: { status: true, availability: true, verificationStatus: true },
+            select: {
+              status: true,
+              availability: true,
+              verificationStatus: true,
+            },
           },
           wallet: {
             select: {
@@ -570,7 +596,9 @@ export class AdminReadService {
     return { items, total, page: page.page, pageSize: page.pageSize };
   }
 
-  async listHosts(query: Record<string, string | undefined>): Promise<PageResult<unknown>> {
+  async listHosts(
+    query: Record<string, string | undefined>,
+  ): Promise<PageResult<unknown>> {
     const page = this.page(query.page, query.pageSize);
     const status = this.parse(() =>
       assertOneOf(query.status, HOST_STATUSES, 'status'),
@@ -588,11 +616,9 @@ export class AdminReadService {
     const q = query.q?.trim();
     const incomplete = query.incomplete === 'true';
     const where: Prisma.HostProfileWhereInput = {
-      ...(status ? { status: status as HostStatus } : {}),
-      ...(availability ? { availability: availability as HostAvailability } : {}),
-      ...(verificationStatus
-        ? { verificationStatus: verificationStatus as HostVerificationStatus }
-        : {}),
+      ...(status ? { status: status } : {}),
+      ...(availability ? { availability: availability } : {}),
+      ...(verificationStatus ? { verificationStatus: verificationStatus } : {}),
       ...(incomplete
         ? {
             OR: [
@@ -600,7 +626,11 @@ export class AdminReadService {
               { applicationBio: '' },
               { agreementAcceptances: { none: {} } },
               { verificationStatus: { in: ['PENDING', 'REJECTED'] } },
-              { user: { profile: { OR: [{ avatarUrl: null }, { avatarUrl: '' }] } } },
+              {
+                user: {
+                  profile: { OR: [{ avatarUrl: null }, { avatarUrl: '' }] },
+                },
+              },
             ],
           }
         : {}),
@@ -611,7 +641,11 @@ export class AdminReadService {
                 ...(isUuid(q) ? [{ id: q }] : []),
                 { email: { contains: q, mode: 'insensitive' } },
                 { phone: { contains: q, mode: 'insensitive' } },
-                { profile: { displayName: { contains: q, mode: 'insensitive' } } },
+                {
+                  profile: {
+                    displayName: { contains: q, mode: 'insensitive' },
+                  },
+                },
               ],
             },
           }
@@ -655,7 +689,9 @@ export class AdminReadService {
     return { items, total, page: page.page, pageSize: page.pageSize };
   }
 
-  async listCalls(query: Record<string, string | undefined>): Promise<PageResult<unknown>> {
+  async listCalls(
+    query: Record<string, string | undefined>,
+  ): Promise<PageResult<unknown>> {
     const page = this.page(query.page, query.pageSize);
     const status = this.parse(() =>
       assertOneOf(query.status, CALL_STATUSES, 'status'),
@@ -678,8 +714,8 @@ export class AdminReadService {
     const createdAt = createdAtRange(from, to);
     const where: Prisma.CallWhereInput = {
       AND: [
-        status ? { status: status as CallStatus } : {},
-        callType ? { callType: callType as CallType } : {},
+        status ? { status: status } : {},
+        callType ? { callType: callType } : {},
         callSettlementWhere(settlement) ?? {},
         createdAt ? { createdAt } : {},
         userId ? { OR: [{ callerId: userId }, { calleeId: userId }] } : {},
@@ -689,14 +725,28 @@ export class AdminReadService {
             ? { OR: [{ id: q }, { callerId: q }, { calleeId: q }] }
             : {
                 OR: [
-                  { caller: { profile: { displayName: { contains: q, mode: 'insensitive' } } } },
-                  { callee: { profile: { displayName: { contains: q, mode: 'insensitive' } } } },
+                  {
+                    caller: {
+                      profile: {
+                        displayName: { contains: q, mode: 'insensitive' },
+                      },
+                    },
+                  },
+                  {
+                    callee: {
+                      profile: {
+                        displayName: { contains: q, mode: 'insensitive' },
+                      },
+                    },
+                  },
                 ],
               }
           : {},
       ],
     };
-    const sortField = ['createdAt', 'status', 'billedAmountCents'].includes(query.sort ?? '')
+    const sortField = ['createdAt', 'status', 'billedAmountCents'].includes(
+      query.sort ?? '',
+    )
       ? (query.sort as 'createdAt' | 'status' | 'billedAmountCents')
       : 'createdAt';
     const [total, rows] = await this.prisma.$transaction([
@@ -707,8 +757,20 @@ export class AdminReadService {
         skip: page.skip,
         take: page.take,
         include: {
-          caller: { select: { id: true, phone: true, profile: { select: { displayName: true } } } },
-          callee: { select: { id: true, phone: true, profile: { select: { displayName: true } } } },
+          caller: {
+            select: {
+              id: true,
+              phone: true,
+              profile: { select: { displayName: true } },
+            },
+          },
+          callee: {
+            select: {
+              id: true,
+              phone: true,
+              profile: { select: { displayName: true } },
+            },
+          },
         },
       }),
     ]);
@@ -743,11 +805,19 @@ export class AdminReadService {
       },
     });
     if (!call) {
-      throw new AppError(ErrorCodes.NOT_FOUND, 'Call not found', HttpStatus.NOT_FOUND);
+      throw new AppError(
+        ErrorCodes.NOT_FOUND,
+        'Call not found',
+        HttpStatus.NOT_FOUND,
+      );
     }
     const share = this.config.get('CREATOR_SHARE_BPS');
     const refund = await this.prisma.walletLedgerEntry.findFirst({
-      where: { referenceType: 'call', referenceId: callId, reason: 'CALL_REFUND' },
+      where: {
+        referenceType: 'call',
+        referenceId: callId,
+        reason: 'CALL_REFUND',
+      },
       select: { id: true, amountCents: true, createdAt: true },
     });
     const presented = this.presentCall(call, share);
@@ -783,7 +853,9 @@ export class AdminReadService {
     };
   }
 
-  async listPayments(query: Record<string, string | undefined>): Promise<PageResult<unknown>> {
+  async listPayments(
+    query: Record<string, string | undefined>,
+  ): Promise<PageResult<unknown>> {
     const page = this.page(query.page, query.pageSize);
     const status = this.parse(() =>
       assertOneOf(query.status, PAYMENT_STATUSES, 'status'),
@@ -794,7 +866,7 @@ export class AdminReadService {
     const q = query.q?.trim();
     const createdAt = createdAtRange(from, to);
     const where: Prisma.PaymentWhereInput = {
-      ...(status ? { status: status as PaymentStatus } : {}),
+      ...(status ? { status: status } : {}),
       ...(provider ? { provider } : {}),
       ...(createdAt ? { createdAt } : {}),
       ...(q
@@ -802,6 +874,8 @@ export class AdminReadService {
             OR: [
               ...(isUuid(q) ? [{ id: q }, { userId: q }] : []),
               { providerPaymentId: { contains: q, mode: 'insensitive' } },
+              { providerCaptureId: { contains: q, mode: 'insensitive' } },
+              { providerRefundId: { contains: q, mode: 'insensitive' } },
             ],
           }
         : {}),
@@ -830,7 +904,11 @@ export class AdminReadService {
       select: this.paymentSelect(),
     });
     if (!payment) {
-      throw new AppError(ErrorCodes.NOT_FOUND, 'Payment not found', HttpStatus.NOT_FOUND);
+      throw new AppError(
+        ErrorCodes.NOT_FOUND,
+        'Payment not found',
+        HttpStatus.NOT_FOUND,
+      );
     }
     const ledger = await this.prisma.walletLedgerEntry.findMany({
       where: { referenceType: 'payment', referenceId: id },
@@ -851,7 +929,9 @@ export class AdminReadService {
     };
   }
 
-  async listPayouts(query: Record<string, string | undefined>): Promise<PageResult<unknown>> {
+  async listPayouts(
+    query: Record<string, string | undefined>,
+  ): Promise<PageResult<unknown>> {
     const page = this.page(query.page, query.pageSize);
     const status = this.parse(() =>
       assertOneOf(query.status, PAYOUT_STATUSES, 'status'),
@@ -861,7 +941,7 @@ export class AdminReadService {
     const q = query.q?.trim();
     const createdAt = createdAtRange(from, to);
     const where: Prisma.PayoutRequestWhereInput = {
-      ...(status ? { status: status as PayoutStatus } : {}),
+      ...(status ? { status: status } : {}),
       ...(createdAt ? { createdAt } : {}),
       ...(q
         ? isUuid(q)
@@ -871,7 +951,11 @@ export class AdminReadService {
                 OR: [
                   { email: { contains: q, mode: 'insensitive' } },
                   { phone: { contains: q, mode: 'insensitive' } },
-                  { profile: { displayName: { contains: q, mode: 'insensitive' } } },
+                  {
+                    profile: {
+                      displayName: { contains: q, mode: 'insensitive' },
+                    },
+                  },
                 ],
               },
             }
@@ -922,7 +1006,11 @@ export class AdminReadService {
       },
     });
     if (!payout) {
-      throw new AppError(ErrorCodes.NOT_FOUND, 'Payout not found', HttpStatus.NOT_FOUND);
+      throw new AppError(
+        ErrorCodes.NOT_FOUND,
+        'Payout not found',
+        HttpStatus.NOT_FOUND,
+      );
     }
     const audit = await this.prisma.auditLog.findMany({
       where: { targetType: 'payout', targetId: id },
@@ -966,7 +1054,8 @@ export class AdminReadService {
       creatorShareBps: this.config.get('CREATOR_SHARE_BPS'),
       ...money,
       earningReversalsCents,
-      netCreatorEarningsCents: money.creatorEarningsCents - earningReversalsCents,
+      netCreatorEarningsCents:
+        money.creatorEarningsCents - earningReversalsCents,
       paidOutCents: paid._sum.amountCents ?? 0,
       paidOutCount: paid._count._all,
       pendingPayoutCents: pending._sum.amountCents ?? 0,
@@ -975,7 +1064,9 @@ export class AdminReadService {
     };
   }
 
-  async listWallets(query: Record<string, string | undefined>): Promise<PageResult<unknown>> {
+  async listWallets(
+    query: Record<string, string | undefined>,
+  ): Promise<PageResult<unknown>> {
     const page = this.page(query.page, query.pageSize);
     const q = query.q?.trim();
     const where: Prisma.WalletWhereInput = q
@@ -985,7 +1076,9 @@ export class AdminReadService {
               ...(isUuid(q) ? [{ id: q }] : []),
               { email: { contains: q, mode: 'insensitive' } },
               { phone: { contains: q, mode: 'insensitive' } },
-              { profile: { displayName: { contains: q, mode: 'insensitive' } } },
+              {
+                profile: { displayName: { contains: q, mode: 'insensitive' } },
+              },
             ],
           },
         }
@@ -1023,7 +1116,8 @@ export class AdminReadService {
       if (!limitRaw) return 25;
       if (!/^\d+$/.test(limitRaw)) throw new Error('limit must be an integer');
       const value = Number(limitRaw);
-      if (value < 1 || value > 100) throw new Error('limit must be between 1 and 100');
+      if (value < 1 || value > 100)
+        throw new Error('limit must be between 1 and 100');
       return value;
     });
     return this.wallet.listLedger(userId, limit, cursor || undefined);
@@ -1055,7 +1149,9 @@ export class AdminReadService {
     return { initiated, received };
   }
 
-  async listReports(query: Record<string, string | undefined>): Promise<PageResult<unknown>> {
+  async listReports(
+    query: Record<string, string | undefined>,
+  ): Promise<PageResult<unknown>> {
     const page = this.page(query.page, query.pageSize);
     const status = this.parse(() =>
       assertOneOf(query.status, REPORT_STATUSES, 'status'),
@@ -1063,7 +1159,13 @@ export class AdminReadService {
     const reason = this.parse(() =>
       assertOneOf(
         query.reason,
-        ['HARASSMENT', 'SPAM', 'INAPPROPRIATE_CONTENT', 'FRAUD', 'OTHER'] as const,
+        [
+          'HARASSMENT',
+          'SPAM',
+          'INAPPROPRIATE_CONTENT',
+          'FRAUD',
+          'OTHER',
+        ] as const,
         'reason',
       ),
     );
@@ -1071,8 +1173,8 @@ export class AdminReadService {
     const to = this.parse(() => parseDateBound(query.to, 'to'));
     const createdAt = createdAtRange(from, to);
     const where: Prisma.ReportWhereInput = {
-      ...(status ? { status: status as ReportStatus } : {}),
-      ...(reason ? { reason: reason as ReportReason } : {}),
+      ...(status ? { status: status } : {}),
+      ...(reason ? { reason: reason } : {}),
       ...(createdAt ? { createdAt } : {}),
     };
     const [total, items] = await this.prisma.$transaction([
@@ -1083,8 +1185,12 @@ export class AdminReadService {
         skip: page.skip,
         take: page.take,
         include: {
-          reporter: { select: { id: true, profile: { select: { displayName: true } } } },
-          reported: { select: { id: true, profile: { select: { displayName: true } } } },
+          reporter: {
+            select: { id: true, profile: { select: { displayName: true } } },
+          },
+          reported: {
+            select: { id: true, profile: { select: { displayName: true } } },
+          },
         },
       }),
     ]);
@@ -1116,7 +1222,11 @@ export class AdminReadService {
       },
     });
     if (!report) {
-      throw new AppError(ErrorCodes.NOT_FOUND, 'Report not found', HttpStatus.NOT_FOUND);
+      throw new AppError(
+        ErrorCodes.NOT_FOUND,
+        'Report not found',
+        HttpStatus.NOT_FOUND,
+      );
     }
     const audit = await this.prisma.auditLog.findMany({
       where: { targetType: 'report', targetId: id },
@@ -1125,10 +1235,16 @@ export class AdminReadService {
     return { ...report, audit };
   }
 
-  async listNotifications(query: Record<string, string | undefined>): Promise<PageResult<unknown>> {
+  async listNotifications(
+    query: Record<string, string | undefined>,
+  ): Promise<PageResult<unknown>> {
     const page = this.page(query.page, query.pageSize);
     const status = this.parse(() =>
-      assertOneOf(query.status, ['PENDING', 'SENT', 'FAILED'] as const, 'status'),
+      assertOneOf(
+        query.status,
+        ['PENDING', 'SENT', 'FAILED'] as const,
+        'status',
+      ),
     );
     const from = this.parse(() => parseDateBound(query.from, 'from'));
     const to = this.parse(() => parseDateBound(query.to, 'to'));
@@ -1136,7 +1252,7 @@ export class AdminReadService {
     const type = query.type?.trim();
     const createdAt = createdAtRange(from, to);
     const where: Prisma.AppNotificationWhereInput = {
-      ...(status ? { status: status as NotificationStatus } : {}),
+      ...(status ? { status: status } : {}),
       ...(userId ? { userId } : {}),
       ...(type ? { type } : {}),
       ...(createdAt ? { createdAt } : {}),
@@ -1149,14 +1265,18 @@ export class AdminReadService {
         skip: page.skip,
         take: page.take,
         include: {
-          user: { select: { id: true, profile: { select: { displayName: true } } } },
+          user: {
+            select: { id: true, profile: { select: { displayName: true } } },
+          },
         },
       }),
     ]);
     return { items, total, page: page.page, pageSize: page.pageSize };
   }
 
-  async listDevices(query: Record<string, string | undefined>): Promise<PageResult<unknown>> {
+  async listDevices(
+    query: Record<string, string | undefined>,
+  ): Promise<PageResult<unknown>> {
     const page = this.page(query.page, query.pageSize);
     const userId = this.optionalUuid(query.userId, 'userId');
     const where: Prisma.DeviceTokenWhereInput = userId ? { userId } : {};
@@ -1195,7 +1315,9 @@ export class AdminReadService {
     };
   }
 
-  async listAudit(query: Record<string, string | undefined>): Promise<PageResult<unknown>> {
+  async listAudit(
+    query: Record<string, string | undefined>,
+  ): Promise<PageResult<unknown>> {
     const page = this.page(query.page, query.pageSize);
     const from = this.parse(() => parseDateBound(query.from, 'from'));
     const to = this.parse(() => parseDateBound(query.to, 'to'));
@@ -1262,7 +1384,10 @@ export class AdminReadService {
       providers: {
         sms: {
           mode: smsLive ? 'live' : 'mock',
-          ...classifyProvider({ mode: smsLive ? 'live' : 'mock', credentialsPresent: smsReady }),
+          ...classifyProvider({
+            mode: smsLive ? 'live' : 'mock',
+            credentialsPresent: smsReady,
+          }),
         },
         agora: {
           mode: agoraLive ? 'live' : 'mock',
@@ -1284,7 +1409,9 @@ export class AdminReadService {
           mode: fcmLive ? 'live' : 'mock',
           ...classifyProvider({
             mode: fcmLive ? 'live' : 'mock',
-            credentialsPresent: Boolean(this.config.get('FIREBASE_SERVICE_ACCOUNT_JSON')),
+            credentialsPresent: Boolean(
+              this.config.get('FIREBASE_SERVICE_ACCOUNT_JSON'),
+            ),
           }),
         },
         payout: {
@@ -1310,7 +1437,11 @@ export class AdminReadService {
         callLifecycle,
       };
     } catch {
-      return { status: 'error' as const, notifications: null, callLifecycle: null };
+      return {
+        status: 'error' as const,
+        notifications: null,
+        callLifecycle: null,
+      };
     }
   }
 
@@ -1331,8 +1462,16 @@ export class AdminReadService {
       endReason: string | null;
       settlementAppliedAt: Date | null;
       createdAt: Date;
-      caller?: { id: string; phone: string | null; profile: { displayName: string } | null };
-      callee?: { id: string; phone: string | null; profile: { displayName: string } | null };
+      caller?: {
+        id: string;
+        phone: string | null;
+        profile: { displayName: string } | null;
+      };
+      callee?: {
+        id: string;
+        phone: string | null;
+        profile: { displayName: string } | null;
+      };
     },
     creatorShareBps: number,
   ) {
@@ -1356,7 +1495,10 @@ export class AdminReadService {
       billedSeconds: call.billedSeconds,
       billedAmountCents: call.billedAmountCents,
       creatorEarningCents,
-      platformFeeCents: Math.max(0, call.billedAmountCents - creatorEarningCents),
+      platformFeeCents: Math.max(
+        0,
+        call.billedAmountCents - creatorEarningCents,
+      ),
       creatorShareBps,
       connectedAt: call.connectedAt,
       endedAt: call.endedAt,
@@ -1405,7 +1547,9 @@ export class AdminReadService {
             type: payout.destination.type,
             label: payout.destination.label,
             isDefault: payout.destination.isDefault,
-            detailsMasked: maskDestinationDetails(payout.destination.detailsJson),
+            detailsMasked: maskDestinationDetails(
+              payout.destination.detailsJson,
+            ),
           }
         : null,
     };
@@ -1420,6 +1564,13 @@ export class AdminReadService {
       status: true,
       provider: true,
       providerPaymentId: true,
+      providerCaptureId: true,
+      creditCents: true,
+      refundStatus: true,
+      providerRefundId: true,
+      refundedAmountCents: true,
+      reconciliationStatus: true,
+      capturedAt: true,
       failureReason: true,
       createdAt: true,
       updatedAt: true,
@@ -1472,9 +1623,10 @@ export class AdminReadService {
       out[key] = 0;
     }
     for (const row of rows) {
-      const key = (row as { status?: T; availability?: T; callType?: T }).status
-        ?? (row as { availability?: T }).availability
-        ?? (row as { callType?: T }).callType;
+      const key =
+        (row as { status?: T; availability?: T; callType?: T }).status ??
+        (row as { availability?: T }).availability ??
+        (row as { callType?: T }).callType;
       if (key && key in out) {
         out[key] = row._count._all;
       }
@@ -1486,11 +1638,17 @@ export class AdminReadService {
     return this.parse(() => parsePageQuery(page, pageSize));
   }
 
-  private optionalUuid(value: string | undefined, label: string): string | undefined {
+  private optionalUuid(
+    value: string | undefined,
+    label: string,
+  ): string | undefined {
     const trimmed = value?.trim();
     if (!trimmed) return undefined;
     if (!isUuid(trimmed)) {
-      throw new AppError(ErrorCodes.VALIDATION_FAILED, `${label} must be a UUID`);
+      throw new AppError(
+        ErrorCodes.VALIDATION_FAILED,
+        `${label} must be a UUID`,
+      );
     }
     return trimmed;
   }
@@ -1501,7 +1659,9 @@ export class AdminReadService {
     allowed: readonly T[],
     fallback: T,
   ): Record<string, 'asc' | 'desc'> {
-    const field = (allowed as readonly string[]).includes(sort ?? '') ? sort! : fallback;
+    const field = (allowed as readonly string[]).includes(sort ?? '')
+      ? sort!
+      : fallback;
     return { [field]: dir === 'asc' ? 'asc' : 'desc' };
   }
 

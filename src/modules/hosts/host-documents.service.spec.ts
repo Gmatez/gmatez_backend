@@ -1,6 +1,9 @@
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
-import { HostDocumentsService } from './host-documents.service';
+import {
+  HostDocumentsService,
+  normalizeIdentityCardNumber,
+} from './host-documents.service';
 import { ErrorCodes } from '../../common/errors/app-error';
 
 const userId = 'doc-spec-user';
@@ -24,6 +27,14 @@ function harness() {
   };
   return { service: new HostDocumentsService(prisma as never), prisma };
 }
+
+describe('identity card number', () => {
+  it('rejects a blank identity card number', () => {
+    expect(() => normalizeIdentityCardNumber('   ')).toThrow(
+      /Identity card number/,
+    );
+  });
+});
 
 describe('host documents', () => {
   afterAll(async () => {

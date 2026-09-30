@@ -105,6 +105,12 @@ export class RechargeController {
     return this.recharge.listActive();
   }
 
+  @Public()
+  @Get('call-pricing')
+  callPricing() {
+    return this.recharge.userCallRate();
+  }
+
   @Roles('ADMIN')
   @Get('admin/recharge-plans')
   listAll() {

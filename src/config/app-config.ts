@@ -17,7 +17,7 @@ const schema = z.object({
   OTP_PROVIDER: z.enum(['mock', 'sms']).optional(),
   SMS_PROVIDER: z.enum(['msg91', 'twilio']).optional(),
   CALLING_PROVIDER: z.enum(['mock', 'agora']).optional(),
-  PAYMENT_PROVIDER: z.enum(['mock', 'stripe']).optional(),
+  PAYMENT_PROVIDER: z.enum(['mock', 'stripe', 'razorpay']).optional(),
   PUSH_PROVIDER: z.enum(['mock', 'fcm']).optional(),
   PAYMENT_WEBHOOK_SECRET: z.string().min(16),
   CALLING_WEBHOOK_SECRET: z.string().min(16),
@@ -70,6 +70,11 @@ const schema = z.object({
   TWILIO_FROM_NUMBER: z.string().optional().default(''),
   FIREBASE_SERVICE_ACCOUNT_JSON: z.string().optional().default(''),
   STRIPE_SECRET_KEY: z.string().optional().default(''),
+  RAZORPAY_KEY_ID: z.string().optional().default(''),
+  RAZORPAY_KEY_SECRET: z.string().optional().default(''),
+  RAZORPAY_WEBHOOK_SECRET: z.string().optional().default(''),
+  /** Book currency for new wallets. Razorpay defaults this to INR. */
+  PLATFORM_CURRENCY: z.enum(['INR', 'USD']).optional(),
   AGORA_APP_ID: z.string().optional().default(''),
   AGORA_APP_CERTIFICATE: z.string().optional().default(''),
   /** Short-lived RTC token TTL (seconds). Default 1 hour; renew before expiry. */
@@ -86,7 +91,8 @@ const schema = z.object({
 export type AppConfig = z.infer<typeof schema> & {
   OTP_PROVIDER: 'mock' | 'sms';
   CALLING_PROVIDER: 'mock' | 'agora';
-  PAYMENT_PROVIDER: 'mock' | 'stripe';
+  PAYMENT_PROVIDER: 'mock' | 'stripe' | 'razorpay';
+  PLATFORM_CURRENCY: 'INR' | 'USD';
   PUSH_PROVIDER: 'mock' | 'fcm';
 };
 
@@ -145,6 +151,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       nodeEnv,
       'PAYMENT_PROVIDER',
     ),
+    PLATFORM_CURRENCY:
+      raw.PLATFORM_CURRENCY ??
+      (raw.PAYMENT_PROVIDER === 'razorpay' ? 'INR' : 'USD'),
     PUSH_PROVIDER: resolveProvider(
       raw.PUSH_PROVIDER,
       'mock',
@@ -218,6 +227,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     if (!cfg.STRIPE_SECRET_KEY) {
       throw new Error(
         'Invalid configuration: PAYMENT_PROVIDER=stripe requires STRIPE_SECRET_KEY in production',
+      );
+    }
+  }
+
+  if (cfg.PAYMENT_PROVIDER === 'razorpay') {
+    if (
+      !cfg.RAZORPAY_KEY_ID ||
+      !cfg.RAZORPAY_KEY_SECRET ||
+      !cfg.RAZORPAY_WEBHOOK_SECRET
+    ) {
+      throw new Error(
+        'Invalid configuration: PAYMENT_PROVIDER=razorpay requires RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, and RAZORPAY_WEBHOOK_SECRET',
       );
     }
   }

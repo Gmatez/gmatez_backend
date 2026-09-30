@@ -7,6 +7,24 @@ import { PrismaService } from '../../database/prisma.service';
 
 const ALLOWED = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const MAX_BYTES = 1_500_000;
+const APPLICATION_KINDS = [
+  'identity-front',
+  'identity-back',
+  'profile-image',
+] as const;
+
+export type ApplicationImageKind = (typeof APPLICATION_KINDS)[number];
+
+export function normalizeIdentityCardNumber(value: string | undefined): string {
+  const trimmed = (value ?? '').trim();
+  if (trimmed.length < 4 || trimmed.length > 32) {
+    throw new AppError(
+      ErrorCodes.VALIDATION_FAILED,
+      'Identity card number is required',
+    );
+  }
+  return trimmed;
+}
 
 @Injectable()
 export class HostDocumentsService {
@@ -79,7 +97,70 @@ export class HostDocumentsService {
     return { stored: true, mime: input.mime };
   }
 
-  async read(userId: string, kind: 'id-proof' | 'avatar') {
+  async saveApplicationDocument(
+    userId: string,
+    input: {
+      kind: ApplicationImageKind;
+      mime: string;
+      dataBase64: string;
+      identityCardNumber?: string;
+    },
+  ) {
+    if (!APPLICATION_KINDS.includes(input.kind)) {
+      throw new AppError(
+        ErrorCodes.VALIDATION_FAILED,
+        'Document kind is not supported',
+      );
+    }
+    const data = this.decode(input.mime, input.dataBase64);
+    await this.write(userId, input.kind, data);
+    if (input.identityCardNumber !== undefined) {
+      const number = normalizeIdentityCardNumber(input.identityCardNumber);
+      await this.write(userId, 'identity-number', Buffer.from(number, 'utf8'));
+    }
+    return { stored: true, kind: input.kind };
+  }
+
+  async requireApplicationDocuments(userId: string) {
+    const missing: string[] = [];
+    for (const kind of APPLICATION_KINDS) {
+      try {
+        await fs.access(this.path(userId, kind));
+      } catch {
+        missing.push(kind);
+      }
+    }
+    let identityCardNumber = '';
+    try {
+      identityCardNumber = (
+        await fs.readFile(this.path(userId, 'identity-number'), 'utf8')
+      ).trim();
+    } catch {
+      identityCardNumber = '';
+    }
+    if (identityCardNumber.length < 4) {
+      missing.push('identityCardNumber');
+    }
+    if (missing.length > 0) {
+      throw new AppError(
+        ErrorCodes.HOST_APPLICATION_INVALID,
+        'Identity card number, identity card front image, identity card back image, and profile image are required',
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        { missing },
+      );
+    }
+    const front = await fs.readFile(this.path(userId, 'identity-front'));
+    const back = await fs.readFile(this.path(userId, 'identity-back'));
+    const profile = await fs.readFile(this.path(userId, 'profile-image'));
+    return {
+      identityCardNumber,
+      identityFrontMime: sniffMime(front),
+      identityBackMime: sniffMime(back),
+      profileImageMime: sniffMime(profile),
+    };
+  }
+
+  async read(userId: string, kind: 'id-proof' | 'avatar' | ApplicationImageKind) {
     const mime =
       kind === 'id-proof'
         ? (await this.prisma.hostProfile.findUnique({ where: { userId } }))
@@ -94,7 +175,9 @@ export class HostDocumentsService {
     }
     try {
       const data = await fs.readFile(this.path(userId, kind));
-      return { mime: mime || 'image/jpeg', data };
+      const resolved =
+        kind === 'id-proof' ? mime || 'image/jpeg' : sniffMime(data);
+      return { mime: resolved, data };
     } catch {
       throw new AppError(
         ErrorCodes.NOT_FOUND,
@@ -147,4 +230,21 @@ export class HostDocumentsService {
       },
     });
   }
+}
+
+function sniffMime(data: Buffer): string {
+  if (data[0] === 0xff && data[1] === 0xd8) {
+    return 'image/jpeg';
+  }
+  if (data[0] === 0x89 && data[1] === 0x50) {
+    return 'image/png';
+  }
+  if (
+    data.length > 12 &&
+    data.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    data.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return 'image/webp';
+  }
+  return 'image/jpeg';
 }

@@ -23,6 +23,8 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { HostDocumentsService } from './host-documents.service';
+import type { ApplicationImageKind } from './host-documents.service';
 import { HostsService } from './hosts.service';
 
 export class HostAgreementAcceptanceDto {
@@ -38,6 +40,27 @@ export class HostAgreementAcceptanceDto {
   @MinLength(1)
   @MaxLength(16)
   version!: string;
+}
+
+export class HostApplicationDocumentDto {
+  @ApiProperty({ enum: ['identity-front', 'identity-back', 'profile-image'] })
+  @IsIn(['identity-front', 'identity-back', 'profile-image'])
+  kind!: ApplicationImageKind;
+
+  @ApiProperty({ enum: ['image/jpeg', 'image/png', 'image/webp'] })
+  @IsIn(['image/jpeg', 'image/png', 'image/webp'])
+  mime!: string;
+
+  @ApiProperty()
+  @IsString()
+  @MinLength(8)
+  dataBase64!: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  identityCardNumber?: string;
 }
 
 export class HostApplyDto {
@@ -148,7 +171,18 @@ export class HostAvailabilityDto {
 @ApiBearerAuth()
 @Controller('hosts')
 export class HostsController {
-  constructor(private readonly hosts: HostsService) {}
+  constructor(
+    private readonly hosts: HostsService,
+    private readonly documents: HostDocumentsService,
+  ) {}
+
+  @Post('application-documents')
+  saveApplicationDocument(
+    @CurrentUser() user: { userId: string },
+    @Body() body: HostApplicationDocumentDto,
+  ) {
+    return this.documents.saveApplicationDocument(user.userId, body);
+  }
 
   @Get('me')
   me(@CurrentUser() user: { userId: string }) {

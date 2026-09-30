@@ -26,6 +26,10 @@
 
 Never credit the wallet before inserting the unique provider event. If the unique insert fails, return the already-processed result.
 
+Razorpay top-ups use the same ledger. See `razorpay.md`. INR amounts are integer paise stored in the existing minor-unit columns. Wallet credit still waits for a verified provider event and the unique key `payment:{id}:credit`.
+
+Call creation now places the first minute hold under `SELECT … FOR UPDATE` before the call rings, and releases it on reject, cancel, timeout, or a provider-session failure. Settlement is unchanged.
+
 ## Holds
 
 Active calls move funds from `available` to `held` without a ledger debit. Settlement writes a single `CALL_CHARGE` debit and releases leftover hold. This keeps the ledger as an economic history rather than a stream of hold noise.

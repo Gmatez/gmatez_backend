@@ -18,7 +18,8 @@ export type LedgerMutation = {
     | 'ADMIN_ADJUSTMENT'
     | 'PROMOTIONAL_CREDIT'
     | 'CREATOR_EARNING'
-    | 'PAYOUT';
+    | 'PAYOUT'
+    | 'PAYMENT_REFUND';
   amountCents: number;
   idempotencyKey: string;
   referenceType?: string;

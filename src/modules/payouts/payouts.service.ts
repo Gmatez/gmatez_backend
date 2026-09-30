@@ -21,6 +21,9 @@ export class PayoutsService {
       minimumAmountCents: MIN_PAYOUT_CENTS,
       payoutRailStatus: 'CONFIG_REQUIRED' as const,
       payoutRailCode: 'PAYOUT_PROVIDER_CONFIG_REQUIRED',
+      payoutRail: 'RAZORPAYX' as const,
+      moneyTransferred: false,
+      externalTransferStatus: 'NOT_TRANSFERRED' as const,
     };
   }
 
@@ -70,6 +73,17 @@ export class PayoutsService {
 
     try {
       return await this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "Wallet" WHERE "userId" = ${userId} FOR UPDATE`;
+        const pendingInTx = await tx.payoutRequest.findFirst({
+          where: { userId, status: { in: ['REQUESTED', 'PROCESSING'] } },
+        });
+        if (pendingInTx) {
+          throw new AppError(
+            ErrorCodes.PAYOUT_NOT_ELIGIBLE,
+            'A payout is already pending',
+            HttpStatus.CONFLICT,
+          );
+        }
         await this.wallet.applyLedger(
           {
             userId,
@@ -184,6 +198,13 @@ export class PayoutsService {
         ErrorCodes.CONFLICT,
         'Payout is already terminal',
         HttpStatus.CONFLICT,
+      );
+    }
+    if (status === 'COMPLETED') {
+      throw new AppError(
+        ErrorCodes.PAYOUT_NOT_ELIGIBLE,
+        'External payout is not configured. COMPLETED would claim a bank transfer that did not happen.',
+        HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }
     if (status === 'REJECTED' || status === 'FAILED') {

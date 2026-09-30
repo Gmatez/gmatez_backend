@@ -205,11 +205,33 @@ export class CallingService implements OnModuleInit {
       throw error;
     }
 
-    const session = await this.provider.createSession({
-      callId: call.id,
-      callerId,
-      calleeId,
-    });
+    try {
+      await this.wallet.hold(callerId, minHold, call.id);
+    } catch (error) {
+      await this.transition(call.id, CallStatus.FAILED, {
+        actorId: callerId,
+        source: 'api.create.hold',
+        extra: { endedAt: new Date(), endReason: 'insufficient_funds' },
+      }).catch(() => undefined);
+      throw error;
+    }
+
+    let session;
+    try {
+      session = await this.provider.createSession({
+        callId: call.id,
+        callerId,
+        calleeId,
+      });
+    } catch (error) {
+      await this.wallet.releaseHold(callerId, call.id);
+      await this.transition(call.id, CallStatus.FAILED, {
+        actorId: callerId,
+        source: 'api.create.provider',
+        extra: { endedAt: new Date(), endReason: 'provider_session_failed' },
+      }).catch(() => undefined);
+      throw error;
+    }
 
     const ringing = await this.transition(call.id, CallStatus.RINGING, {
       actorId: callerId,
@@ -418,10 +440,12 @@ export class CallingService implements OnModuleInit {
         HttpStatus.FORBIDDEN,
       );
     }
-    return this.transition(callId, CallStatus.REJECTED, {
+    const updated = await this.transition(callId, CallStatus.REJECTED, {
       actorId: userId,
       source: 'api.reject',
     });
+    await this.wallet.releaseHold(call.callerId, call.id);
+    return updated;
   }
 
   async cancel(callId: string, userId: string) {
@@ -680,7 +704,14 @@ export class CallingService implements OnModuleInit {
   }
 
   private async onConnected(call: Call): Promise<void> {
-    await this.wallet.hold(call.callerId, call.ratePerMinuteCents, call.id);
+    const fresh = await this.prisma.call.findUnique({ where: { id: call.id } });
+    if (fresh && fresh.heldAmountCents < fresh.ratePerMinuteCents) {
+      await this.wallet.hold(
+        fresh.callerId,
+        fresh.ratePerMinuteCents,
+        fresh.id,
+      );
+    }
     await this.prisma.call.update({
       where: { id: call.id },
       data: {

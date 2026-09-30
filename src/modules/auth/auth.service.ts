@@ -55,7 +55,10 @@ export class AuthService {
           data: { userId: created.id, displayName },
         });
         await tx.wallet.create({
-          data: { userId: created.id },
+          data: {
+            userId: created.id,
+            currency: this.config.get('PLATFORM_CURRENCY'),
+          },
         });
         return created;
       });
@@ -421,7 +424,9 @@ export class AuthService {
           profile: {
             create: { displayName: `User ${digits.slice(-4)}` },
           },
-          wallet: { create: {} },
+          wallet: {
+            create: { currency: this.config.get('PLATFORM_CURRENCY') },
+          },
         },
       });
       this.logger.log({ userId: user.id }, 'otp.verified');

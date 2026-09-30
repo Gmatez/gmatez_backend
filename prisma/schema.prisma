@@ -57,6 +57,8 @@ enum LedgerReason {
   PROMOTIONAL_CREDIT
   CREATOR_EARNING
   PAYOUT
+  /// Razorpay (or other gateway) refund of a wallet top-up. Not a call refund.
+  PAYMENT_REFUND
 }
 
 enum PaymentStatus {
@@ -222,6 +224,11 @@ model HostProfile {
   idProofLast4              String?
   idProofMime               String?
   idProofUpdatedAt          DateTime?
+  /// Full identity number for admin review only. Never returned on public discovery.
+  identityCardNumber        String?
+  identityFrontMime         String?
+  identityBackMime          String?
+  profileImageMime          String?
   createdAt                 DateTime               @default(now())
   updatedAt                 DateTime               @updatedAt
 
@@ -291,6 +298,18 @@ model Payment {
   idempotencyKey     String        @unique
   clientSecret       String?
   failureReason      String?
+  rechargePlanId     String?
+  creditCents        Int?
+  /// Razorpay payment id (pay_...) after checkout. Order id stays in providerPaymentId.
+  providerCaptureId  String?
+  /// NONE | PENDING | PROCESSED | FAILED. Payment.status stays SUCCEEDED until capture.
+  refundStatus       String        @default("NONE")
+  refundAttempt      Int           @default(0)
+  providerRefundId   String?       @unique
+  refundedAmountCents Int          @default(0)
+  /// OK | PENDING | AMOUNT_MISMATCH | CURRENCY_MISMATCH | ORDER_MISMATCH | PROVIDER_AHEAD | INTERNAL_AHEAD
+  reconciliationStatus String      @default("OK")
+  capturedAt         DateTime?
   createdAt          DateTime     @default(now())
   updatedAt          DateTime     @updatedAt
 
@@ -298,6 +317,7 @@ model Payment {
 
   @@index([userId, createdAt(sort: Desc)])
   @@index([status, createdAt])
+  @@index([providerCaptureId])
 }
 
 model ProviderEvent {
@@ -513,6 +533,9 @@ model PayoutRequest {
   status         PayoutStatus @default(REQUESTED)
   failureReason  String?
   idempotencyKey String       @unique
+  /// NOT_TRANSFERRED until a payout rail returns a provider transfer id.
+  externalTransferStatus String @default("NOT_TRANSFERRED")
+  providerTransferId String?
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
   processedAt    DateTime?
