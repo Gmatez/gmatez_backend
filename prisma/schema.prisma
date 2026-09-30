@@ -580,6 +580,9 @@ model RechargePlan {
   priceMinor         Int
   walletCreditMinor  Int
   bonusMinor         Int      @default(0)
+  /// Coins shown on the recharge card. Set in admin; not derived from the rupee price.
+  coins              Int      @default(0)
+  bonusCoins         Int      @default(0)
   description        String   @default("")
   isActive           Boolean  @default(true)
   displayOrder       Int      @default(0)

@@ -8,6 +8,8 @@ export type RechargeInput = {
   priceMinor?: number;
   walletCreditMinor?: number;
   bonusMinor?: number;
+  coins?: number;
+  bonusCoins?: number;
   description?: string;
   isActive?: boolean;
   displayOrder?: number;
@@ -88,14 +90,19 @@ export class RechargeService {
     creating: boolean,
   ): Prisma.RechargePlanUpdateInput {
     const priceMinor = input.priceMinor;
-    const walletCreditMinor = input.walletCreditMinor;
+    const coins = this.coinCount(input.coins, 'Coins');
+    const bonusCoins = this.coinCount(input.bonusCoins, 'Bonus coins', true);
+    const walletCreditMinor =
+      coins != null ? coins * 10 : input.walletCreditMinor;
+    const bonusMinor =
+      bonusCoins != null ? bonusCoins * 10 : (input.bonusMinor ?? 0);
     if (
       creating &&
-      (!input.name?.trim() || priceMinor == null || walletCreditMinor == null)
+      (!input.name?.trim() || priceMinor == null || coins == null)
     ) {
       throw new AppError(
         ErrorCodes.VALIDATION_FAILED,
-        'Name, price, and wallet credit are required',
+        'Name, price, and coins are required',
       );
     }
     if (
@@ -116,7 +123,6 @@ export class RechargeService {
         'Wallet credit must be a positive minor amount',
       );
     }
-    const bonusMinor = input.bonusMinor ?? 0;
     if (!Number.isInteger(bonusMinor) || bonusMinor < 0) {
       throw new AppError(
         ErrorCodes.VALIDATION_FAILED,
@@ -127,7 +133,9 @@ export class RechargeService {
       ...(input.name != null ? { name: input.name.trim().slice(0, 80) } : {}),
       ...(priceMinor != null ? { priceMinor } : {}),
       ...(walletCreditMinor != null ? { walletCreditMinor } : {}),
-      ...(input.bonusMinor != null ? { bonusMinor } : {}),
+      ...(coins != null ? { coins } : {}),
+      ...(bonusCoins != null ? { bonusCoins, bonusMinor } : {}),
+      ...(bonusCoins == null && input.bonusMinor != null ? { bonusMinor } : {}),
       ...(input.description != null
         ? { description: input.description.slice(0, 240) }
         : {}),
@@ -136,6 +144,23 @@ export class RechargeService {
         ? { displayOrder: input.displayOrder }
         : {}),
     };
+  }
+
+  private coinCount(
+    value: number | undefined,
+    label: string,
+    allowZero = false,
+  ): number | undefined {
+    if (value == null) {
+      return undefined;
+    }
+    if (!Number.isInteger(value) || value < (allowZero ? 0 : 1) || value > 1_000_000) {
+      throw new AppError(
+        ErrorCodes.VALIDATION_FAILED,
+        `${label} must be a whole number${allowZero ? '' : ' of at least 1'}`,
+      );
+    }
+    return value;
   }
 
   private async audit(

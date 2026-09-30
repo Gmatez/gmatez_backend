@@ -45,6 +45,18 @@ class RechargeFieldsDto {
   @Min(0)
   bonusMinor?: number;
 
+  @ApiPropertyOptional({ description: 'Coins shown on the recharge card' })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  coins?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  bonusCoins?: number;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
@@ -78,10 +90,10 @@ export class CreateRechargeDto
   @Min(1)
   declare priceMinor: number;
 
-  @ApiProperty()
+  @ApiProperty({ description: 'Coins the member sees and receives for this plan' })
   @IsInt()
   @Min(1)
-  declare walletCreditMinor: number;
+  declare coins: number;
 }
 
 export class UpdateRechargeDto extends RechargeFieldsDto {
