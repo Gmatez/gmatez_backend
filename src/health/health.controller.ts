@@ -12,11 +12,14 @@ export class HealthController {
     private readonly redis: RedisService,
   ) {}
 
-  @Public()
-  @Get('/health')
-  live() {
-    return { status: 'ok' };
-  }
+ @Public()
+@Get('/health')
+live() {
+  return {
+    status: 'ok',
+    build: '2026-09-30-empty-json-v2',
+  };
+}
 
   @Public()
   @Get('/ready')

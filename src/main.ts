@@ -11,6 +11,31 @@ import { IoAdapter } from '@nestjs/platform-socket.io';
 import { AppModule } from './app.module';
 import { loadConfig } from './config/app-config';
 
+function registerEmptySafeJsonParser(adapter: FastifyAdapter): void {
+  // Flutter/Dio often sends Content-Type: application/json with an empty body
+  // on accept/reject/end. Nest/Fastify default parser rejects that with 400.
+  adapter.useBodyParser(
+    'application/json',
+    true,
+    undefined,
+    (req, body, done) => {
+      const buffer = Buffer.isBuffer(body)
+        ? body
+        : Buffer.from(String(body ?? ''), 'utf8');
+      (req as { rawBody?: string }).rawBody = buffer.toString('utf8');
+      if (buffer.length === 0) {
+        done(null, {});
+        return;
+      }
+      try {
+        done(null, JSON.parse(buffer.toString('utf8')) as unknown);
+      } catch (error) {
+        done(error as Error, undefined);
+      }
+    },
+  );
+}
+
 async function bootstrap() {
   const config = loadConfig();
   const adapter = new FastifyAdapter({
@@ -43,6 +68,8 @@ async function bootstrap() {
       (req.headers['x-request-id'] as string | undefined) ??
       crypto.randomUUID(),
   });
+
+  registerEmptySafeJsonParser(adapter);
 
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
