@@ -470,12 +470,10 @@ export class HostsService {
     if (!host || host.availability !== 'BUSY') {
       return;
     }
-    // After a call, return to ONLINE when still ACTIVE and complete.
-    const completeness = await this.completeness.evaluate(userId);
+    // The host was ONLINE before markBusy. Restore that. Re-checking
+    // completeness here was dropping hosts to OFFLINE after every call.
     const nextAvailability: HostAvailability =
-      host.status === 'ACTIVE' && completeness.isComplete
-        ? 'ONLINE'
-        : 'OFFLINE';
+      host.status === 'ACTIVE' ? 'ONLINE' : 'OFFLINE';
     const updated = await this.prisma.hostProfile.update({
       where: { userId },
       data: { availability: nextAvailability },
