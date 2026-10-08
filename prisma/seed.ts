@@ -235,6 +235,44 @@ async function main() {
     hidden: hidden.email,
     note: 'Development seed only. Password ChangeMe123! Alice=caller, Bob=online host.',
   });
+  await seedRechargePlans();
+}
+
+async function seedRechargePlans() {
+  const existing = await prisma.rechargePlan.count();
+  if (existing > 0) {
+    return;
+  }
+  await prisma.rechargePlan.createMany({
+    data: [
+      {
+        name: 'Starter',
+        priceMinor: 9900,
+        walletCreditMinor: 9900,
+        coins: 100,
+        description: '₹99',
+        displayOrder: 1,
+      },
+      {
+        name: 'Plus',
+        priceMinor: 19900,
+        walletCreditMinor: 19900,
+        coins: 220,
+        bonusCoins: 20,
+        description: '₹199',
+        displayOrder: 2,
+      },
+      {
+        name: 'Popular',
+        priceMinor: 49900,
+        walletCreditMinor: 49900,
+        coins: 600,
+        bonusCoins: 100,
+        description: '₹499',
+        displayOrder: 3,
+      },
+    ],
+  });
 }
 
 main()

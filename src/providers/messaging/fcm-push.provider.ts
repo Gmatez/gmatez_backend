@@ -12,11 +12,7 @@ export class FcmPushProvider implements PushProvider {
   readonly name = 'fcm';
   private readonly logger = new Logger(FcmPushProvider.name);
   private messaging: {
-    sendEachForMulticast: (msg: {
-      tokens: string[];
-      notification: { title: string; body: string };
-      data?: Record<string, string>;
-    }) => Promise<{
+    sendEachForMulticast: (msg: Record<string, unknown>) => Promise<{
       successCount: number;
       responses: Array<{ success: boolean; error?: { code?: string } }>;
     }>;
@@ -63,11 +59,9 @@ export class FcmPushProvider implements PushProvider {
         'FCM is not configured (FIREBASE_SERVICE_ACCOUNT_JSON). CONFIG_REQUIRED.',
       );
     }
-    const result = await this.messaging.sendEachForMulticast({
-      tokens,
-      notification: { title: message.title, body: message.body },
-      data: message.data,
-    });
+    const result = await this.messaging.sendEachForMulticast(
+      this.toFcmMessage(tokens, message),
+    );
     const failedTokens: string[] = [];
     result.responses.forEach((response, index) => {
       if (!response.success) {
@@ -83,5 +77,50 @@ export class FcmPushProvider implements PushProvider {
       'fcm.dispatch',
     );
     return { successCount: result.successCount, failedTokens };
+  }
+
+  /**
+   * Incoming calls are data-only on Android so the app can raise a
+   * full-screen call notification while backgrounded. Other pushes keep a
+   * visible notification payload.
+   */
+  private toFcmMessage(tokens: string[], message: PushMessage) {
+    const data = message.data ?? {};
+    const incomingCall = data.type === 'incoming_call';
+    if (incomingCall) {
+      return {
+        tokens,
+        data: {
+          ...data,
+          title: data.title ?? message.title,
+          body: data.body ?? message.body,
+        },
+        android: {
+          priority: 'high',
+          ttl: 45_000,
+        },
+        apns: {
+          headers: { 'apns-priority': '10' },
+          payload: {
+            aps: {
+              alert: { title: message.title, body: message.body },
+              sound: 'default',
+            },
+          },
+        },
+      };
+    }
+    return {
+      tokens,
+      notification: { title: message.title, body: message.body },
+      data,
+      android: {
+        priority: 'high',
+        notification: {
+          channelId: 'general',
+          sound: 'default',
+        },
+      },
+    };
   }
 }

@@ -2,6 +2,10 @@ import { WalletService } from './wallet.service';
 import { ErrorCodes } from '../../common/errors/app-error';
 
 describe('wallet ensureForUser', () => {
+  const config = {
+    get: (key: string) => (key === 'PLATFORM_CURRENCY' ? 'INR' : undefined),
+  };
+
   it('creates a wallet when the account has none', async () => {
     const prisma = {
       user: {
@@ -12,15 +16,15 @@ describe('wallet ensureForUser', () => {
       wallet: {
         upsert: jest
           .fn()
-          .mockResolvedValue({ userId: 'user-1', currency: 'USD' }),
+          .mockResolvedValue({ userId: 'user-1', currency: 'INR' }),
       },
     };
-    const service = new WalletService(prisma as never);
+    const service = new WalletService(prisma as never, config as never);
     await service.ensureForUser('user-1');
     expect(prisma.wallet.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { userId: 'user-1' },
-        create: { userId: 'user-1', currency: 'USD' },
+        create: { userId: 'user-1', currency: 'INR' },
       }),
     );
   });
@@ -30,7 +34,7 @@ describe('wallet ensureForUser', () => {
       user: { findUnique: jest.fn().mockResolvedValue(null) },
       wallet: { upsert: jest.fn() },
     };
-    const service = new WalletService(prisma as never);
+    const service = new WalletService(prisma as never, config as never);
     await expect(service.ensureForUser('gone')).rejects.toMatchObject({
       code: ErrorCodes.NOT_FOUND,
     });

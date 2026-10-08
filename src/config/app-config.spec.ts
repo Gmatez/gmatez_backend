@@ -18,15 +18,13 @@ const smsEnv = {
 };
 
 describe('loadConfig production safety', () => {
-  it('allows development with mock defaults', () => {
-    const cfg = loadConfig({
-      ...baseEnv,
-      NODE_ENV: 'development',
-    });
-    expect(cfg.OTP_PROVIDER).toBe('mock');
-    expect(cfg.CALLING_PROVIDER).toBe('mock');
-    expect(cfg.PAYMENT_PROVIDER).toBe('mock');
-    expect(cfg.PUSH_PROVIDER).toBe('mock');
+  it('rejects development when providers are omitted', () => {
+    expect(() =>
+      loadConfig({
+        ...baseEnv,
+        NODE_ENV: 'development',
+      }),
+    ).toThrow(/must be set explicitly/);
   });
 
   it('allows test with mock defaults', () => {
@@ -133,7 +131,7 @@ describe('loadConfig production safety', () => {
         STRIPE_SECRET_KEY: 'sk_live_x',
         FIREBASE_SERVICE_ACCOUNT_JSON: '{}',
       }),
-    ).toThrow(/ALLOW_MOCK_PROVIDERS cannot be true/);
+    ).toThrow(/ALLOW_MOCK_PROVIDERS cannot be true outside NODE_ENV=test/);
   });
 
   it('rejects production when providers are omitted', () => {
@@ -162,7 +160,7 @@ describe('loadConfig production safety', () => {
     expect(cfg.OTP_PROVIDER).toBe('sms');
   });
 
-  it('allows staging mocks only with explicit ALLOW_MOCK_PROVIDERS', () => {
+  it('rejects staging mocks', () => {
     expect(() =>
       loadConfig({
         ...baseEnv,
@@ -172,18 +170,7 @@ describe('loadConfig production safety', () => {
         PAYMENT_PROVIDER: 'mock',
         PUSH_PROVIDER: 'mock',
       }),
-    ).toThrow(/ALLOW_MOCK_PROVIDERS=true/);
-
-    const cfg = loadConfig({
-      ...baseEnv,
-      NODE_ENV: 'staging',
-      ALLOW_MOCK_PROVIDERS: 'true',
-      OTP_PROVIDER: 'mock',
-      CALLING_PROVIDER: 'mock',
-      PAYMENT_PROVIDER: 'mock',
-      PUSH_PROVIDER: 'mock',
-    });
-    expect(cfg.PAYMENT_PROVIDER).toBe('mock');
+    ).toThrow(/mock providers are forbidden/);
   });
 
   it('rejects razorpay without credentials in every environment', () => {
@@ -205,8 +192,14 @@ describe('loadConfig production safety', () => {
   it('accepts razorpay test credentials and defaults the book currency to INR', () => {
     const cfg = loadConfig({
       ...baseEnv,
+      ...smsEnv,
       NODE_ENV: 'development',
+      CALLING_PROVIDER: 'agora',
       PAYMENT_PROVIDER: 'razorpay',
+      PUSH_PROVIDER: 'fcm',
+      AGORA_APP_ID: 'app',
+      AGORA_APP_CERTIFICATE: 'cert',
+      FIREBASE_SERVICE_ACCOUNT_JSON: '{}',
       RAZORPAY_KEY_ID: 'rzp_test_public',
       RAZORPAY_KEY_SECRET: 'test-secret',
       RAZORPAY_WEBHOOK_SECRET: 'whsec-test',

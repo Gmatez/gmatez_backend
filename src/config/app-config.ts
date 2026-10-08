@@ -96,8 +96,8 @@ export type AppConfig = z.infer<typeof schema> & {
   PUSH_PROVIDER: 'mock' | 'fcm';
 };
 
-function isLocalEnv(env: (typeof environments)[number]): boolean {
-  return env === 'development' || env === 'test';
+function isTestEnv(env: (typeof environments)[number]): boolean {
+  return env === 'test';
 }
 
 function resolveProvider<T extends string>(
@@ -109,7 +109,7 @@ function resolveProvider<T extends string>(
   if (value) {
     return value;
   }
-  if (isLocalEnv(env)) {
+  if (isTestEnv(env)) {
     return fallback;
   }
   throw new Error(
@@ -125,9 +125,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const raw = parsed.data;
   const nodeEnv = raw.NODE_ENV;
 
-  if (nodeEnv === 'production' && raw.ALLOW_MOCK_PROVIDERS === 'true') {
+  if (nodeEnv !== 'test' && raw.ALLOW_MOCK_PROVIDERS === 'true') {
     throw new Error(
-      'Invalid configuration: ALLOW_MOCK_PROVIDERS cannot be true when NODE_ENV=production',
+      'Invalid configuration: ALLOW_MOCK_PROVIDERS cannot be true outside NODE_ENV=test',
     );
   }
 
@@ -168,24 +168,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (cfg.PAYMENT_PROVIDER === 'mock') mocks.push(['PAYMENT_PROVIDER', 'mock']);
   if (cfg.PUSH_PROVIDER === 'mock') mocks.push(['PUSH_PROVIDER', 'mock']);
 
-  if (nodeEnv === 'production' && mocks.length > 0) {
+  if (nodeEnv !== 'test' && mocks.length > 0) {
     throw new Error(
-      `Invalid configuration: mock providers are forbidden in production (${mocks
+      `Invalid configuration: mock providers are forbidden when NODE_ENV=${nodeEnv} (${mocks
         .map(([k, v]) => `${k}=${v}`)
         .join(', ')})`,
     );
-  }
-
-  if (nodeEnv === 'staging' && mocks.length > 0) {
-    if (raw.ALLOW_MOCK_PROVIDERS !== 'true') {
-      throw new Error(
-        `Invalid configuration: staging uses mock providers (${mocks
-          .map(([k, v]) => `${k}=${v}`)
-          .join(
-            ', ',
-          )}). Set real providers, or set ALLOW_MOCK_PROVIDERS=true only for explicit staging sandbox.`,
-      );
-    }
   }
 
   if (cfg.OTP_PROVIDER === 'sms') {
@@ -276,13 +264,7 @@ export class AppConfigService {
   }
 
   get allowsMockProviders(): boolean {
-    if (this.isProduction) {
-      return false;
-    }
-    if (this.isLocal) {
-      return true;
-    }
-    return this.get('ALLOW_MOCK_PROVIDERS') === 'true';
+    return this.get('NODE_ENV') === 'test';
   }
 
   get allowsMockSandbox(): boolean {

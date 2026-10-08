@@ -88,20 +88,23 @@ async function bootstrap() {
   app.setGlobalPrefix('api/v1', { exclude: ['health', 'ready'] });
   app.useWebSocketAdapter(new IoAdapter(app));
 
-  const swaggerConfig = new DocumentBuilder()
-    .setTitle('Enterprise Social Calling API')
-    .setDescription(
-      'Modular monolith backend for authenticated discovery, wallet-billed calling, and payments. Media is handled by an external provider.',
-    )
-    .setVersion('1.0.0')
-    .addBearerAuth()
-    .addServer(`http://127.0.0.1:${config.PORT}`, 'Current environment')
-    .build();
-  const document = SwaggerModule.createDocument(app, swaggerConfig);
-  SwaggerModule.setup('api/v1/docs', app, document);
+  if (config.NODE_ENV !== 'production') {
+    const swaggerConfig = new DocumentBuilder()
+      .setTitle('Enterprise Social Calling API')
+      .setDescription(
+        'Modular monolith backend for authenticated discovery, wallet-billed calling, and payments. Media is handled by an external provider.',
+      )
+      .setVersion('1.0.0')
+      .addBearerAuth()
+      .addServer(`http://127.0.0.1:${config.PORT}`, 'Current environment')
+      .build();
+    const document = SwaggerModule.createDocument(app, swaggerConfig);
+    SwaggerModule.setup('api/v1/docs', app, document);
+    Logger.log(`Swagger at http://${config.HOST}:${config.PORT}/api/v1/docs`);
+  }
 
   await app.listen(config.PORT, config.HOST);
-  Logger.log(`Listening on http://${config.HOST}:${config.PORT}/api/v1/docs`);
+  Logger.log(`Listening on http://${config.HOST}:${config.PORT}/api/v1`);
 }
 
 void bootstrap().catch((error: unknown) => {

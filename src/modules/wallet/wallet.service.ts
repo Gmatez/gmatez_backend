@@ -1,5 +1,6 @@
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { AppConfigService } from '../../config/app-config';
 import { PrismaService } from '../../database/prisma.service';
 import { AppError, ErrorCodes } from '../../common/errors/app-error';
 import {
@@ -31,7 +32,10 @@ export type LedgerMutation = {
 export class WalletService {
   private readonly logger = new Logger(WalletService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: AppConfigService,
+  ) {}
 
   async ensureForUser(userId: string) {
     const user = await this.prisma.user.findUnique({
@@ -45,10 +49,28 @@ export class WalletService {
         HttpStatus.NOT_FOUND,
       );
     }
-    return this.prisma.wallet.upsert({
+    const currency = this.config.get('PLATFORM_CURRENCY');
+    const wallet = await this.prisma.wallet.upsert({
       where: { userId },
       update: {},
-      create: { userId, currency: 'USD' },
+      create: { userId, currency },
+    });
+    if (
+      wallet.currency === currency ||
+      wallet.availableBalanceCents !== 0 ||
+      wallet.heldBalanceCents !== 0
+    ) {
+      return wallet;
+    }
+    const entries = await this.prisma.walletLedgerEntry.count({
+      where: { walletId: wallet.id },
+    });
+    if (entries > 0) {
+      return wallet;
+    }
+    return this.prisma.wallet.update({
+      where: { id: wallet.id },
+      data: { currency },
     });
   }
 

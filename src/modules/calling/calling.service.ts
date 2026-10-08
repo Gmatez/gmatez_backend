@@ -246,15 +246,25 @@ export class CallingService implements OnModuleInit {
       { delay: RING_TIMEOUT_MS, jobId: `ring-timeout-${call.id}` },
     );
 
+    this.logger.log({ callId: call.id, callerId, calleeId }, 'call initiated');
+    const payload = await this.publicCall(ringing);
+    const callerName = payload.callerDisplayName?.trim() || 'Someone';
+    const callLabel =
+      String(payload.callType ?? '').toUpperCase() === 'VIDEO'
+        ? 'video call'
+        : 'voice call';
     await this.notifications.notifyUser(calleeId, {
       type: 'incoming_call',
       title: 'Incoming call',
-      body: 'You have an incoming call',
-      data: { callId: call.id },
+      body: `${callerName} is calling`,
+      data: {
+        type: 'incoming_call',
+        callId: call.id,
+        callType: String(payload.callType ?? ''),
+        title: 'Incoming call',
+        body: `${callerName} started a ${callLabel}`,
+      },
     });
-
-    this.logger.log({ callId: call.id, callerId, calleeId }, 'call initiated');
-    const payload = await this.publicCall(ringing);
     this.realtime.emitToUser(callerId, 'call.ringing', payload);
     this.realtime.emitToUser(calleeId, 'call.ringing', payload);
     return {
