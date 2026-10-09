@@ -28,6 +28,9 @@ export class NotificationsService implements OnModuleInit {
       const tokens = await this.prisma.deviceToken.findMany({
         where: { userId: data.userId },
       });
+      if (!tokens.length) {
+        this.logger.warn({ userId: data.userId }, 'push.no_device_token');
+      }
       const result = await this.push.send(
         tokens.map((t) => t.token),
         { title: data.title, body: data.body, data: data.data },

@@ -69,6 +69,10 @@ export class FcmPushProvider implements PushProvider {
     result.responses.forEach((response, index) => {
       if (!response.success) {
         failedTokens.push(tokens[index]);
+        this.logger.warn(
+          { code: response.error?.code ?? 'unknown' },
+          'fcm.token_failed',
+        );
       }
     });
     this.logger.log(
@@ -83,42 +87,32 @@ export class FcmPushProvider implements PushProvider {
   }
 
   /**
-   * Incoming calls are data-only on Android so the app can raise a
-   * full-screen call notification while backgrounded. Other pushes keep a
-   * visible notification payload.
+   * Incoming calls are data-only on Android. A notification payload is drawn
+   * by the system and does not start the app when it has been swiped away, so
+   * the closed app never rings. The background isolate posts the call alert.
    */
   private toFcmMessage(tokens: string[], message: PushMessage) {
-    const data = message.data ?? {};
+    const data = stringifyData(message.data ?? {});
     const incomingCall = data.type === 'incoming_call';
     if (incomingCall) {
       return {
         tokens,
         data: {
           ...data,
-          title: data.title ?? message.title,
-          body: data.body ?? message.body,
+          title: data.title || message.title,
+          body: data.body || message.body,
         },
         android: {
-          priority: 'high',
+          priority: 'high' as const,
           ttl: 45_000,
-          notification: {
-            channelId: 'incoming_calls',
-            icon: 'ic_stat_notify',
-            sound: 'default',
-            priority: 'max',
-            visibility: 'public',
-          },
-        },
-        notification: {
-          title: message.title,
-          body: message.body,
         },
         apns: {
-          headers: { 'apns-priority': '10' },
+          headers: { 'apns-priority': '10', 'apns-push-type': 'alert' },
           payload: {
             aps: {
               alert: { title: message.title, body: message.body },
               sound: 'default',
+              'content-available': 1,
             },
           },
         },
@@ -138,6 +132,17 @@ export class FcmPushProvider implements PushProvider {
       },
     };
   }
+}
+
+function stringifyData(data: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (value == null) {
+      continue;
+    }
+    out[key] = String(value);
+  }
+  return out;
 }
 
 function normalizeServiceAccount(raw: string): string {
