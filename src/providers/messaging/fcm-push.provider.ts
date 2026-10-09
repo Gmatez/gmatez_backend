@@ -109,11 +109,11 @@ export class FcmPushProvider implements PushProvider {
           priority: 'high' as const,
           ttl: 45_000,
           notification: {
-            channelId: 'incoming_calls',
-            sound: 'default',
+            channelId: 'gmatez_incoming_call',
+            sound: 'incoming_call',
             priority: 'max' as const,
             visibility: 'public' as const,
-            defaultSound: true,
+            defaultSound: false,
             defaultVibrateTimings: true,
           },
         },
@@ -122,7 +122,7 @@ export class FcmPushProvider implements PushProvider {
           payload: {
             aps: {
               alert: { title: message.title, body: message.body },
-              sound: 'default',
+              sound: 'incoming_call.wav',
             },
           },
         },
