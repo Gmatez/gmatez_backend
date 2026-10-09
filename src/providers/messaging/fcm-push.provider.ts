@@ -87,9 +87,8 @@ export class FcmPushProvider implements PushProvider {
   }
 
   /**
-   * Incoming calls are data-only on Android. A notification payload is drawn
-   * by the system and does not start the app when it has been swiped away, so
-   * the closed app never rings. The background isolate posts the call alert.
+   * A closed app does not run Dart, so Android must draw the call alert
+   * itself. The data block still opens the call when the host taps it.
    */
   private toFcmMessage(tokens: string[], message: PushMessage) {
     const data = stringifyData(message.data ?? {});
@@ -102,9 +101,21 @@ export class FcmPushProvider implements PushProvider {
           title: data.title || message.title,
           body: data.body || message.body,
         },
+        notification: {
+          title: message.title,
+          body: message.body,
+        },
         android: {
           priority: 'high' as const,
           ttl: 45_000,
+          notification: {
+            channelId: 'incoming_calls',
+            sound: 'default',
+            priority: 'max' as const,
+            visibility: 'public' as const,
+            defaultSound: true,
+            defaultVibrateTimings: true,
+          },
         },
         apns: {
           headers: { 'apns-priority': '10', 'apns-push-type': 'alert' },
@@ -112,7 +123,6 @@ export class FcmPushProvider implements PushProvider {
             aps: {
               alert: { title: message.title, body: message.body },
               sound: 'default',
-              'content-available': 1,
             },
           },
         },
