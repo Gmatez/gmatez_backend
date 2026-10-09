@@ -35,9 +35,11 @@ until npx prisma migrate deploy; do
   sleep 5
 done
 
-if [ "${SEED_DEMO:-}" = "true" ]; then
+if [ "${SEED_DEMO:-}" = "true" ] && [ "${NODE_ENV:-}" != "production" ]; then
   echo "Seeding demo accounts"
   node dist/seed/seed.js
+elif [ "${SEED_DEMO:-}" = "true" ]; then
+  echo "Skipping demo seed because NODE_ENV=production"
 fi
 
 echo "Starting server"

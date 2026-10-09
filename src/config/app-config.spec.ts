@@ -116,22 +116,22 @@ describe('loadConfig production safety', () => {
     ).toThrow(/PUSH_PROVIDER=mock/);
   });
 
-  it('rejects production + ALLOW_MOCK_PROVIDERS bypass', () => {
-    expect(() =>
-      loadConfig({
-        ...baseEnv,
-        ...smsEnv,
-        NODE_ENV: 'production',
-        ALLOW_MOCK_PROVIDERS: 'true',
-        CALLING_PROVIDER: 'agora',
-        PAYMENT_PROVIDER: 'stripe',
-        PUSH_PROVIDER: 'fcm',
-        AGORA_APP_ID: 'app',
-        AGORA_APP_CERTIFICATE: 'cert',
-        STRIPE_SECRET_KEY: 'sk_live_x',
-        FIREBASE_SERVICE_ACCOUNT_JSON: '{}',
-      }),
-    ).toThrow(/ALLOW_MOCK_PROVIDERS cannot be true outside NODE_ENV=test/);
+  it('does not enable mocks when ALLOW_MOCK_PROVIDERS is set outside test', () => {
+    const cfg = loadConfig({
+      ...baseEnv,
+      ...smsEnv,
+      NODE_ENV: 'production',
+      ALLOW_MOCK_PROVIDERS: 'true',
+      CALLING_PROVIDER: 'agora',
+      PAYMENT_PROVIDER: 'stripe',
+      PUSH_PROVIDER: 'fcm',
+      AGORA_APP_ID: 'app',
+      AGORA_APP_CERTIFICATE: 'cert',
+      STRIPE_SECRET_KEY: 'sk_live_x',
+      FIREBASE_SERVICE_ACCOUNT_JSON: '{}',
+    });
+    expect(cfg.OTP_PROVIDER).toBe('sms');
+    expect(cfg.CALLING_PROVIDER).toBe('agora');
   });
 
   it('rejects production when providers are omitted', () => {

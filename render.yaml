@@ -1,6 +1,5 @@
-# Free demo host (NOT production). Postgres expires after 30 days. The web
-# service sleeps after 15 minutes. NODE_ENV=development intentionally so
-# mock providers are allowed — production rejects mocks at startup.
+# Render host. Mock providers are rejected at startup. Enter Twilio, Agora,
+# Razorpay, and Firebase secrets in the dashboard (sync: false).
 services:
   - type: web
     name: gmatez-api
@@ -10,25 +9,43 @@ services:
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
-        value: development
+        value: production
       - key: HOST
         value: 0.0.0.0
       - key: SEED_DEMO
-        value: "true"
+        value: "false"
       - key: OTP_EXPOSE
         value: "false"
-      - key: ALLOW_MOCK_PROVIDERS
-        value: "true"
-      - key: MOCK_OTP
-        value: "123456"
       - key: OTP_PROVIDER
-        value: mock
+        value: sms
+      - key: SMS_PROVIDER
+        value: twilio
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
+        sync: false
       - key: CALLING_PROVIDER
-        value: mock
+        value: agora
+      - key: AGORA_APP_ID
+        sync: false
+      - key: AGORA_APP_CERTIFICATE
+        sync: false
       - key: PAYMENT_PROVIDER
-        value: mock
+        value: razorpay
+      - key: PLATFORM_CURRENCY
+        value: INR
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
       - key: PUSH_PROVIDER
-        value: mock
+        value: fcm
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
       - key: LOG_LEVEL
         value: info
       - key: CORS_ORIGINS

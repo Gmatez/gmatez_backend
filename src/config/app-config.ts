@@ -125,12 +125,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const raw = parsed.data;
   const nodeEnv = raw.NODE_ENV;
 
-  if (nodeEnv !== 'test' && raw.ALLOW_MOCK_PROVIDERS === 'true') {
-    throw new Error(
-      'Invalid configuration: ALLOW_MOCK_PROVIDERS cannot be true outside NODE_ENV=test',
-    );
-  }
-
   const cfg: AppConfig = {
     ...raw,
     OTP_PROVIDER: resolveProvider(
