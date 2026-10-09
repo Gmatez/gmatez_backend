@@ -67,7 +67,7 @@ describe('HostCompletenessService', () => {
         userId: 'u1',
         status: 'PENDING_REVIEW',
         availability: 'OFFLINE',
-        verificationStatus: 'NOT_REQUIRED',
+        verificationStatus: 'PENDING',
         voiceEnabled: true,
         videoEnabled: false,
         voiceRatePerMinuteCents: 100,

@@ -10,8 +10,7 @@ export type HostCompletenessField =
   | 'avatar'
   | 'callTypes'
   | 'pricing'
-  | 'agreements'
-  | 'verification';
+  | 'agreements';
 
 export type HostCompletenessResult = {
   isComplete: boolean;
@@ -29,7 +28,6 @@ const FIELD_WEIGHT: Record<HostCompletenessField, number> = {
   callTypes: 15,
   pricing: 10,
   agreements: 15,
-  verification: 5,
 };
 
 @Injectable()
@@ -70,7 +68,9 @@ export class HostCompletenessService {
     if (!host || host.languages.length === 0) {
       missing.push('languages');
     }
-    if (!profile?.avatarUrl || !/^https?:\/\//i.test(profile.avatarUrl)) {
+    const hasPublicAvatar =
+      !!profile?.avatarUrl && /^https?:\/\//i.test(profile.avatarUrl);
+    if (!hasPublicAvatar && !host?.profileImageMime) {
       missing.push('avatar');
     }
     if (!host || (!host.voiceEnabled && !host.videoEnabled)) {
@@ -95,12 +95,6 @@ export class HostCompletenessService {
     }
 
     const verificationStatus = host?.verificationStatus ?? 'UNKNOWN';
-    if (
-      verificationStatus !== 'NOT_REQUIRED' &&
-      verificationStatus !== 'VERIFIED'
-    ) {
-      missing.push('verification');
-    }
 
     const totalWeight = Object.values(FIELD_WEIGHT).reduce((a, b) => a + b, 0);
     const earned = (Object.keys(FIELD_WEIGHT) as HostCompletenessField[])

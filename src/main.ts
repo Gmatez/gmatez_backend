@@ -62,7 +62,7 @@ async function bootstrap() {
         censor: '[redacted]',
       },
     },
-    bodyLimit: 3_000_000,
+    bodyLimit: 8_000_000,
     requestIdHeader: 'x-request-id',
     genReqId: (req: { headers: Record<string, unknown> }) =>
       (req.headers['x-request-id'] as string | undefined) ??

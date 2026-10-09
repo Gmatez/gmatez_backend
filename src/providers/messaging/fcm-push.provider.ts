@@ -98,6 +98,16 @@ export class FcmPushProvider implements PushProvider {
         android: {
           priority: 'high',
           ttl: 45_000,
+          notification: {
+            channelId: 'incoming_calls',
+            sound: 'default',
+            priority: 'max',
+            visibility: 'public',
+          },
+        },
+        notification: {
+          title: message.title,
+          body: message.body,
         },
         apns: {
           headers: { 'apns-priority': '10' },

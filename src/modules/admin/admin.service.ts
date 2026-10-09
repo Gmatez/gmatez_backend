@@ -451,6 +451,25 @@ export class AdminService {
     );
   }
 
+  updateHostDetails(
+    actorId: string,
+    userId: string,
+    input: {
+      displayName?: string;
+      bio?: string;
+      languages?: string[];
+      interests?: string[];
+      voiceEnabled?: boolean;
+      videoEnabled?: boolean;
+      voiceRatePerMinuteCents?: number;
+      videoRatePerMinuteCents?: number;
+      identityCardNumber?: string;
+      idProofType?: string;
+    },
+  ) {
+    return this.hosts.adminUpdateDetails(actorId, userId, input);
+  }
+
   setHostVerification(
     actorId: string,
     userId: string,

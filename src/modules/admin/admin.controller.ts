@@ -18,16 +18,22 @@ import {
   UserStatus,
 } from '@prisma/client';
 import {
+  ArrayMaxSize,
+  IsArray,
+  IsBoolean,
   IsEnum,
   IsIn,
   IsInt,
   IsOptional,
   IsString,
   IsUUID,
+  Max,
   MaxLength,
+  Min,
   MinLength,
   ValidateIf,
 } from 'class-validator';
+import { AppError, ErrorCodes } from '../../common/errors/app-error';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/public.decorator';
 import { HostDocumentsService } from '../hosts/host-documents.service';
@@ -198,6 +204,70 @@ export class SetHostStatusDto {
   internalNote?: string;
 }
 
+export class UpdateHostDetailsDto {
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  displayName?: string;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  bio?: string;
+
+  @ApiProperty({ required: false, type: [String] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(12)
+  @IsString({ each: true })
+  languages?: string[];
+
+  @ApiProperty({ required: false, type: [String] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(12)
+  @IsString({ each: true })
+  interests?: string[];
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsBoolean()
+  voiceEnabled?: boolean;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsBoolean()
+  videoEnabled?: boolean;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100000)
+  voiceRatePerMinuteCents?: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100000)
+  videoRatePerMinuteCents?: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  identityCardNumber?: string;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  idProofType?: string;
+}
+
 export class SetHostVerificationDto {
   @ApiProperty({ enum: HostVerificationStatus })
   @IsEnum(HostVerificationStatus)
@@ -333,6 +403,15 @@ export class AdminController {
       body.reviewNote,
       body.internalNote,
     );
+  }
+
+  @Patch('hosts/:id/details')
+  updateHostDetails(
+    @CurrentUser() actor: { userId: string },
+    @Param('id') id: string,
+    @Body() body: UpdateHostDetailsDto,
+  ) {
+    return this.admin.updateHostDetails(actor.userId, id, body);
   }
 
   @Patch('hosts/:id/verification')
@@ -488,6 +567,26 @@ export class AdminController {
       idProofType: body.idProofType || 'ID',
       idProofLast4: body.idProofLast4,
     });
+  }
+
+  @Get('hosts/:id/documents/:kind')
+  @Header('Cache-Control', 'private, no-store')
+  async hostDocument(
+    @Param('id') id: string,
+    @Param('kind') kind: string,
+  ) {
+    if (
+      kind !== 'identity-front' &&
+      kind !== 'identity-back' &&
+      kind !== 'profile-image'
+    ) {
+      throw new AppError(
+        ErrorCodes.VALIDATION_FAILED,
+        'Document kind is not supported',
+      );
+    }
+    const file = await this.documents.read(id, kind);
+    return new StreamableFile(file.data, { type: file.mime });
   }
 
   @Get('hosts/:id/id-proof')

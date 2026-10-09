@@ -24,13 +24,22 @@ case "$DATABASE_URL" in
     ;;
 esac
 
+# A sleeping Render Postgres can hang a connection for minutes. Fail fast and retry.
+case "$DATABASE_URL" in
+  *connect_timeout=*) ;;
+  *\?*) DATABASE_URL="${DATABASE_URL}&connect_timeout=15" ;;
+  *) DATABASE_URL="${DATABASE_URL}?connect_timeout=15" ;;
+esac
+export DATABASE_URL
+
 attempt=1
-until npx prisma migrate deploy; do
-  if [ "$attempt" -ge 8 ]; then
+echo "Running prisma migrate deploy"
+until timeout 40 npx prisma migrate deploy; do
+  if [ "$attempt" -ge 12 ]; then
     echo "prisma migrate deploy failed after ${attempt} attempts"
     exit 1
   fi
-  echo "Database not ready (attempt ${attempt}/8). Retrying in 5s..."
+  echo "Database not ready (attempt ${attempt}/12). Retrying in 5s..."
   attempt=$((attempt + 1))
   sleep 5
 done

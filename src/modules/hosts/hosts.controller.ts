@@ -61,6 +61,14 @@ export class HostApplicationDocumentDto {
   @IsString()
   @MaxLength(32)
   identityCardNumber?: string;
+
+  @ApiPropertyOptional({
+    enum: ['AADHAAR', 'PAN', 'PASSPORT', 'DRIVING_LICENCE', 'VOTER_ID'],
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  idProofType?: string;
 }
 
 export class HostApplyDto {

@@ -6,7 +6,7 @@ import { AppError, ErrorCodes } from '../../common/errors/app-error';
 import { PrismaService } from '../../database/prisma.service';
 
 const ALLOWED = new Set(['image/jpeg', 'image/png', 'image/webp']);
-const MAX_BYTES = 1_500_000;
+const MAX_BYTES = 4_500_000;
 const APPLICATION_KINDS = [
   'identity-front',
   'identity-back',
@@ -89,9 +89,10 @@ export class HostDocumentsService {
       );
     }
     await this.write(userId, 'avatar', data);
-    await this.prisma.profile.update({
+    await this.write(userId, 'profile-image', data);
+    await this.prisma.hostProfile.updateMany({
       where: { userId },
-      data: { avatarUrl: null },
+      data: { profileImageMime: input.mime },
     });
     await this.audit(actorId, userId, 'host.avatar', { mime: input.mime });
     return { stored: true, mime: input.mime };
@@ -104,6 +105,7 @@ export class HostDocumentsService {
       mime: string;
       dataBase64: string;
       identityCardNumber?: string;
+      idProofType?: string;
     },
   ) {
     if (!APPLICATION_KINDS.includes(input.kind)) {
@@ -114,9 +116,43 @@ export class HostDocumentsService {
     }
     const data = this.decode(input.mime, input.dataBase64);
     await this.write(userId, input.kind, data);
+    let identityCardNumber: string | undefined;
     if (input.identityCardNumber !== undefined) {
-      const number = normalizeIdentityCardNumber(input.identityCardNumber);
-      await this.write(userId, 'identity-number', Buffer.from(number, 'utf8'));
+      identityCardNumber = normalizeIdentityCardNumber(input.identityCardNumber);
+      await this.write(
+        userId,
+        'identity-number',
+        Buffer.from(identityCardNumber, 'utf8'),
+      );
+    }
+    const proofType = input.idProofType?.trim().slice(0, 40);
+    const hostPatch: Prisma.HostProfileUpdateManyMutationInput = {};
+    if (input.kind === 'identity-front') {
+      hostPatch.identityFrontMime = input.mime;
+      hostPatch.idProofMime = input.mime;
+      hostPatch.idProofUpdatedAt = new Date();
+    }
+    if (input.kind === 'identity-back') {
+      hostPatch.identityBackMime = input.mime;
+    }
+    if (input.kind === 'profile-image') {
+      hostPatch.profileImageMime = input.mime;
+      await this.write(userId, 'avatar', data);
+    }
+    if (identityCardNumber) {
+      hostPatch.identityCardNumber = identityCardNumber;
+      const last4 = identityCardNumber.replace(/\D/g, '').slice(-4);
+      hostPatch.idProofLast4 = last4 || null;
+    }
+    if (proofType) {
+      hostPatch.idProofType = proofType;
+      await this.write(userId, 'identity-type', Buffer.from(proofType, 'utf8'));
+    }
+    if (Object.keys(hostPatch).length > 0) {
+      await this.prisma.hostProfile.updateMany({
+        where: { userId },
+        data: hostPatch,
+      });
     }
     return { stored: true, kind: input.kind };
   }
@@ -152,8 +188,20 @@ export class HostDocumentsService {
     const front = await fs.readFile(this.path(userId, 'identity-front'));
     const back = await fs.readFile(this.path(userId, 'identity-back'));
     const profile = await fs.readFile(this.path(userId, 'profile-image'));
+    let idProofType = 'IDENTITY_CARD';
+    try {
+      const stored = (
+        await fs.readFile(this.path(userId, 'identity-type'), 'utf8')
+      ).trim();
+      if (stored) {
+        idProofType = stored.slice(0, 40);
+      }
+    } catch {
+      idProofType = 'IDENTITY_CARD';
+    }
     return {
       identityCardNumber,
+      idProofType,
       identityFrontMime: sniffMime(front),
       identityBackMime: sniffMime(back),
       profileImageMime: sniffMime(profile),
@@ -198,7 +246,7 @@ export class HostDocumentsService {
     if (data.length < 32 || data.length > MAX_BYTES) {
       throw new AppError(
         ErrorCodes.VALIDATION_FAILED,
-        'Image must be under 1.5 MB',
+        'Image must be under 4 MB',
       );
     }
     return data;

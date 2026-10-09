@@ -257,12 +257,12 @@ export class HostsService {
           internalNote: null,
           reviewedAt: null,
           reviewedById: null,
-          verificationStatus: 'NOT_REQUIRED',
+          verificationStatus: 'PENDING',
           identityCardNumber: documents.identityCardNumber,
           identityFrontMime: documents.identityFrontMime,
           identityBackMime: documents.identityBackMime,
           profileImageMime: documents.profileImageMime,
-          idProofType: 'IDENTITY_CARD',
+          idProofType: documents.idProofType,
           idProofLast4: identityLast4 || null,
           idProofMime: documents.identityFrontMime,
           idProofUpdatedAt: new Date(),
@@ -276,12 +276,12 @@ export class HostsService {
           videoEnabled,
           voiceRatePerMinuteCents: voiceRate,
           videoRatePerMinuteCents: videoRate,
-          verificationStatus: 'NOT_REQUIRED',
+          verificationStatus: 'PENDING',
           identityCardNumber: documents.identityCardNumber,
           identityFrontMime: documents.identityFrontMime,
           identityBackMime: documents.identityBackMime,
           profileImageMime: documents.profileImageMime,
-          idProofType: 'IDENTITY_CARD',
+          idProofType: documents.idProofType,
           idProofLast4: identityLast4 || null,
           idProofMime: documents.identityFrontMime,
           idProofUpdatedAt: new Date(),
@@ -417,7 +417,7 @@ export class HostsService {
       if (!completeness.isComplete) {
         throw new AppError(
           ErrorCodes.HOST_INCOMPLETE,
-          'Host profile is incomplete.',
+          `Complete your host profile before going online: ${completeness.missingFields.join(', ')}.`,
           HttpStatus.CONFLICT,
           { missingFields: completeness.missingFields },
         );
@@ -703,6 +703,137 @@ export class HostsService {
       'host.status_changed',
     );
     return this.privateHost(updated);
+  }
+
+  async adminUpdateDetails(
+    actorId: string,
+    userId: string,
+    input: {
+      displayName?: string;
+      bio?: string;
+      languages?: string[];
+      interests?: string[];
+      voiceEnabled?: boolean;
+      videoEnabled?: boolean;
+      voiceRatePerMinuteCents?: number;
+      videoRatePerMinuteCents?: number;
+      identityCardNumber?: string;
+      idProofType?: string;
+    },
+  ) {
+    const host = await this.prisma.hostProfile.findUnique({
+      where: { userId },
+      include: { user: { include: { profile: true } } },
+    });
+    if (!host) {
+      throw new AppError(
+        ErrorCodes.NOT_FOUND,
+        'Host not found',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    const hostData: Prisma.HostProfileUpdateInput = {};
+    const profileData: Prisma.ProfileUpdateInput = {};
+    if (input.displayName !== undefined) {
+      const name = input.displayName.trim();
+      if (name.length < 2) {
+        throw new AppError(
+          ErrorCodes.VALIDATION_FAILED,
+          'Display name must be at least 2 characters',
+        );
+      }
+      profileData.displayName = name.slice(0, 40);
+    }
+    if (input.bio !== undefined) {
+      const bio = input.bio.trim();
+      if (bio.length < 8) {
+        throw new AppError(
+          ErrorCodes.VALIDATION_FAILED,
+          'Bio must be at least 8 characters',
+        );
+      }
+      hostData.applicationBio = bio.slice(0, 500);
+      profileData.bio = bio.slice(0, 280);
+    }
+    if (input.languages) {
+      const languages = this.normalizeList(input.languages);
+      if (languages.length === 0) {
+        throw new AppError(
+          ErrorCodes.VALIDATION_FAILED,
+          'Select at least one language',
+        );
+      }
+      hostData.languages = languages;
+    }
+    if (input.interests) {
+      hostData.interests = this.normalizeList(input.interests);
+    }
+    if (input.voiceEnabled !== undefined) {
+      hostData.voiceEnabled = input.voiceEnabled;
+    }
+    if (input.videoEnabled !== undefined) {
+      hostData.videoEnabled = input.videoEnabled;
+    }
+    if (input.voiceRatePerMinuteCents !== undefined) {
+      hostData.voiceRatePerMinuteCents = this.clampRate(
+        input.voiceRatePerMinuteCents,
+      );
+      profileData.ratePerMinuteCents = this.clampRate(
+        input.voiceRatePerMinuteCents,
+      );
+    }
+    if (input.videoRatePerMinuteCents !== undefined) {
+      hostData.videoRatePerMinuteCents = this.clampRate(
+        input.videoRatePerMinuteCents,
+      );
+    }
+    const nextVoice =
+      input.voiceEnabled !== undefined ? input.voiceEnabled : host.voiceEnabled;
+    const nextVideo =
+      input.videoEnabled !== undefined ? input.videoEnabled : host.videoEnabled;
+    if (!nextVoice && !nextVideo) {
+      throw new AppError(
+        ErrorCodes.VALIDATION_FAILED,
+        'Enable at least one call type',
+      );
+    }
+    if (input.identityCardNumber !== undefined) {
+      const number = input.identityCardNumber.trim();
+      if (number.length < 4 || number.length > 32) {
+        throw new AppError(
+          ErrorCodes.VALIDATION_FAILED,
+          'Identity card number is required',
+        );
+      }
+      hostData.identityCardNumber = number;
+      hostData.idProofLast4 = number.replace(/\D/g, '').slice(-4) || null;
+    }
+    if (input.idProofType !== undefined) {
+      hostData.idProofType = input.idProofType.trim().slice(0, 40);
+    }
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const next = await tx.hostProfile.update({
+        where: { userId },
+        data: hostData,
+      });
+      if (Object.keys(profileData).length > 0) {
+        await tx.profile.update({ where: { userId }, data: profileData });
+      }
+      await tx.auditLog.create({
+        data: {
+          actorId,
+          action: 'host.details_updated',
+          targetType: 'host',
+          targetId: userId,
+          metadata: { fields: Object.keys({ ...hostData, ...profileData }) },
+        },
+      });
+      return next;
+    });
+    if (updated.status === 'ACTIVE') {
+      await this.reconcileDiscoverability(userId);
+    }
+    return this.adminGetHost(userId);
   }
 
   async adminSetVerification(
