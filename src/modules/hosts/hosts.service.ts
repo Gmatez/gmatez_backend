@@ -836,6 +836,55 @@ export class HostsService {
     return this.adminGetHost(userId);
   }
 
+  async adminRecordAgreements(actorId: string, userId: string) {
+    const host = await this.prisma.hostProfile.findUnique({
+      where: { userId },
+    });
+    if (!host) {
+      throw new AppError(
+        ErrorCodes.NOT_FOUND,
+        'Host not found',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    await this.prisma.$transaction(async (tx) => {
+      for (const item of REQUIRED_HOST_AGREEMENTS) {
+        await tx.hostAgreementAcceptance.upsert({
+          where: {
+            userId_agreementType_version: {
+              userId,
+              agreementType: item.agreementType,
+              version: item.version,
+            },
+          },
+          create: {
+            userId,
+            agreementType: item.agreementType,
+            version: item.version,
+          },
+          update: { acceptedAt: new Date() },
+        });
+      }
+      await tx.auditLog.create({
+        data: {
+          actorId,
+          action: 'host.agreements_recorded',
+          targetType: 'host',
+          targetId: userId,
+          metadata: {
+            agreements: REQUIRED_HOST_AGREEMENTS.map(
+              (item) => `${item.agreementType}:${item.version}`,
+            ),
+          },
+        },
+      });
+    });
+    if (host.status === 'ACTIVE') {
+      await this.reconcileDiscoverability(userId);
+    }
+    return this.adminGetHost(userId);
+  }
+
   async adminSetVerification(
     actorId: string,
     userId: string,

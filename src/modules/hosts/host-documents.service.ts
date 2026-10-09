@@ -74,6 +74,28 @@ export class HostDocumentsService {
     };
   }
 
+  async storeProfilePhoto(
+    userId: string,
+    input: { mime: string; dataBase64: string },
+  ) {
+    const data = this.decode(input.mime, input.dataBase64);
+    const profile = await this.prisma.profile.findUnique({ where: { userId } });
+    if (!profile) {
+      throw new AppError(
+        ErrorCodes.NOT_FOUND,
+        'Profile not found',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    await this.write(userId, 'avatar', data);
+    await this.write(userId, 'profile-image', data);
+    await this.prisma.hostProfile.updateMany({
+      where: { userId },
+      data: { profileImageMime: input.mime },
+    });
+    return { stored: true, mime: input.mime };
+  }
+
   async saveAvatar(
     actorId: string,
     userId: string,

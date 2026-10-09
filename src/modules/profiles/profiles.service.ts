@@ -3,6 +3,7 @@ import { Gender } from '@prisma/client';
 import { AppError, ErrorCodes } from '../../common/errors/app-error';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
+import { HostDocumentsService } from '../hosts/host-documents.service';
 import { toOwnProfile } from './profile.presenter';
 
 export type ProfilePatch = {
@@ -25,6 +26,7 @@ export class ProfilesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
+    private readonly documents: HostDocumentsService,
   ) {}
 
   async getMine(userId: string) {
@@ -38,6 +40,20 @@ export class ProfilesService {
     }
     const online = (await this.redis.onlineUserIds([userId])).has(userId);
     return toOwnProfile(profile, online);
+  }
+
+  async setAvatar(
+    userId: string,
+    mime: string,
+    dataBase64: string,
+    publicUrl: string,
+  ) {
+    await this.documents.storeProfilePhoto(userId, { mime, dataBase64 });
+    await this.prisma.profile.update({
+      where: { userId },
+      data: { avatarUrl: publicUrl },
+    });
+    return this.getMine(userId);
   }
 
   async updateMine(userId: string, patch: ProfilePatch) {

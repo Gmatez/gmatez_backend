@@ -1,10 +1,21 @@
-import { Body, Controller, Get, Patch } from '@nestjs/common';
-import { ApiBearerAuth, ApiPropertyOptional, ApiTags } from '@nestjs/swagger';
+import {
+  Body,
+  Controller,
+  Get,
+  Header,
+  Param,
+  Patch,
+  Post,
+  Req,
+  StreamableFile,
+} from '@nestjs/common';
+import { ApiBearerAuth, ApiProperty, ApiPropertyOptional, ApiTags } from '@nestjs/swagger';
 import { Gender } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
   IsBoolean,
   IsEnum,
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -15,7 +26,10 @@ import {
   MinLength,
   ValidateIf,
 } from 'class-validator';
+import type { FastifyRequest } from 'fastify';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Public } from '../../common/decorators/public.decorator';
+import { HostDocumentsService } from '../hosts/host-documents.service';
 import { ProfilesService } from './profiles.service';
 
 export class UpdateProfileDto {
@@ -74,11 +88,25 @@ export class UpdateProfileDto {
   ratePerMinuteCents?: number;
 }
 
+export class ProfileAvatarDto {
+  @ApiProperty({ enum: ['image/jpeg', 'image/png', 'image/webp'] })
+  @IsIn(['image/jpeg', 'image/png', 'image/webp'])
+  mime!: string;
+
+  @ApiProperty()
+  @IsString()
+  @MinLength(8)
+  dataBase64!: string;
+}
+
 @ApiTags('profiles')
 @ApiBearerAuth()
 @Controller('profiles')
 export class ProfilesController {
-  constructor(private readonly profiles: ProfilesService) {}
+  constructor(
+    private readonly profiles: ProfilesService,
+    private readonly documents: HostDocumentsService,
+  ) {}
 
   @Get('me')
   getMine(@CurrentUser() user: { userId: string }) {
@@ -91,5 +119,32 @@ export class ProfilesController {
     @Body() body: UpdateProfileDto,
   ) {
     return this.profiles.updateMine(user.userId, body);
+  }
+
+  @Post('me/avatar')
+  uploadAvatar(
+    @CurrentUser() user: { userId: string },
+    @Body() body: ProfileAvatarDto,
+    @Req() request: FastifyRequest,
+  ) {
+    const forwarded = request.headers['x-forwarded-proto'];
+    const proto = (Array.isArray(forwarded) ? forwarded[0] : forwarded) || 'https';
+    const hostHeader = request.headers['x-forwarded-host'] || request.headers.host;
+    const host = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
+    const publicUrl = `${proto}://${host}/api/v1/profiles/${user.userId}/avatar?v=${Date.now()}`;
+    return this.profiles.setAvatar(
+      user.userId,
+      body.mime,
+      body.dataBase64,
+      publicUrl,
+    );
+  }
+
+  @Public()
+  @Get(':userId/avatar')
+  @Header('Cache-Control', 'public, max-age=300')
+  async avatar(@Param('userId') userId: string) {
+    const file = await this.documents.read(userId, 'avatar');
+    return new StreamableFile(file.data, { type: file.mime });
   }
 }

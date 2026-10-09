@@ -115,6 +115,23 @@ async function upsertHost(
       applicationBio: input.applicationBio ?? 'Development host',
     },
   });
+  for (const item of [
+    ['HOST_GUIDELINES', '1.0'],
+    ['TERMS_OF_SERVICE', '1.0'],
+    ['PRIVACY_POLICY', '1.0'],
+  ] as const) {
+    await prisma.hostAgreementAcceptance.upsert({
+      where: {
+        userId_agreementType_version: {
+          userId,
+          agreementType: item[0],
+          version: item[1],
+        },
+      },
+      create: { userId, agreementType: item[0], version: item[1] },
+      update: {},
+    });
+  }
 }
 
 async function main() {

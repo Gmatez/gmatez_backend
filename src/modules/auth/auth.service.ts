@@ -315,16 +315,20 @@ export class AuthService {
       ttl,
     );
 
-    try {
-      await this.otpDelivery.sendOtp({ phoneE164: phone, otp });
-    } catch (error) {
-      await this.redis.client.del(`gmatez:otp:phone:${phone}`);
-      await this.redis.client.del(cooldownKey);
-      throw error;
-    }
+    // Twilio SMS is paused. Login uses the fixed code 123456 until this is restored.
+    // try {
+    //   await this.otpDelivery.sendOtp({ phoneE164: phone, otp });
+    // } catch (error) {
+    //   await this.redis.client.del(`gmatez:otp:phone:${phone}`);
+    //   await this.redis.client.del(cooldownKey);
+    //   throw error;
+    // }
 
     this.logger.log(
-      { phone: maskPhone(phone), provider: this.otpDelivery.name },
+      {
+        phone: maskPhone(phone),
+        provider: `paused:${this.otpDelivery.name}`,
+      },
       'otp.requested',
     );
 
@@ -485,18 +489,10 @@ export class AuthService {
   }
 
   private resolveOutboundOtp(): string {
-    if (
-      this.config.get('OTP_PROVIDER') === 'mock' &&
-      this.config.allowsMockProviders
-    ) {
-      const length = this.config.get('OTP_LENGTH');
-      const configured = this.config.get('MOCK_OTP')?.trim();
-      if (configured && new RegExp(`^\\d{${length}}$`).test(configured)) {
-        return configured;
-      }
-      if (length === 6) {
-        return '123456';
-      }
+    // Twilio SMS is paused. Every phone login accepts this code.
+    const length = this.config.get('OTP_LENGTH');
+    if (length === 6) {
+      return '123456';
     }
     return this.generateOtp();
   }

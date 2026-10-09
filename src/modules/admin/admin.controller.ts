@@ -414,6 +414,14 @@ export class AdminController {
     return this.admin.updateHostDetails(actor.userId, id, body);
   }
 
+  @Post('hosts/:id/agreements')
+  recordHostAgreements(
+    @CurrentUser() actor: { userId: string },
+    @Param('id') id: string,
+  ) {
+    return this.admin.recordHostAgreements(actor.userId, id);
+  }
+
   @Patch('hosts/:id/verification')
   setHostVerification(
     @CurrentUser() actor: { userId: string },

@@ -33,7 +33,10 @@ export class FcmPushProvider implements PushProvider {
         messaging: () => typeof this.messaging;
       };
       if (!admin.apps.length) {
-        const json = JSON.parse(creds) as Record<string, unknown>;
+        const json = JSON.parse(normalizeServiceAccount(creds)) as Record<
+          string,
+          unknown
+        >;
         admin.initializeApp({ credential: admin.credential.cert(json) });
       }
       this.messaging = admin.messaging() as typeof this.messaging;
@@ -100,6 +103,7 @@ export class FcmPushProvider implements PushProvider {
           ttl: 45_000,
           notification: {
             channelId: 'incoming_calls',
+            icon: 'ic_stat_notify',
             sound: 'default',
             priority: 'max',
             visibility: 'public',
@@ -128,9 +132,21 @@ export class FcmPushProvider implements PushProvider {
         priority: 'high',
         notification: {
           channelId: 'general',
+          icon: 'ic_stat_notify',
           sound: 'default',
         },
       },
     };
   }
+}
+
+function normalizeServiceAccount(raw: string): string {
+  let value = raw.trim();
+  if (
+    (value.startsWith("'") && value.endsWith("'")) ||
+    (value.startsWith('"') && value.endsWith('"') && !value.startsWith('{"'))
+  ) {
+    value = value.slice(1, -1);
+  }
+  return value;
 }

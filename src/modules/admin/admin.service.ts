@@ -470,6 +470,10 @@ export class AdminService {
     return this.hosts.adminUpdateDetails(actorId, userId, input);
   }
 
+  recordHostAgreements(actorId: string, userId: string) {
+    return this.hosts.adminRecordAgreements(actorId, userId);
+  }
+
   setHostVerification(
     actorId: string,
     userId: string,
