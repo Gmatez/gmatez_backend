@@ -20,6 +20,10 @@ import {
   OTP_DELIVERY_PROVIDER,
   type OtpDeliveryProvider,
 } from '../../providers/otp/otp-delivery-provider';
+import {
+  PHONE_IDENTITY_VERIFIER,
+  type PhoneIdentityVerifier,
+} from '../../providers/phone-auth/phone-identity-verifier';
 
 type StoredOtp = {
   hash: string;
@@ -38,6 +42,8 @@ export class AuthService {
     private readonly rateLimit: RateLimitService,
     @Inject(OTP_DELIVERY_PROVIDER)
     private readonly otpDelivery: OtpDeliveryProvider,
+    @Inject(PHONE_IDENTITY_VERIFIER)
+    private readonly phoneIdentityVerifier: PhoneIdentityVerifier,
   ) {}
 
   /** Legacy email registration — kept for admin/seed/e2e; not the product login path. */
@@ -273,6 +279,7 @@ export class AuthService {
   ): Promise<{
     expiresInSeconds: number;
     resendAvailableInSeconds: number;
+    otp?: string;
   }> {
     const phone = this.normalizePhone(phoneInput);
     const ttl = this.config.get('OTP_TTL_SECONDS');
@@ -305,7 +312,7 @@ export class AuthService {
       );
     }
 
-    const otp = this.resolveOutboundOtp();
+    const otp = this.resolveOtp();
     const hash = hmacSha256(this.config.get('OTP_PEPPER'), otp);
     const payload: StoredOtp = { hash, attempts: 0 };
     await this.redis.client.set(
@@ -315,27 +322,28 @@ export class AuthService {
       ttl,
     );
 
-    // Twilio SMS is paused. Login uses the fixed code 123456 until this is restored.
-    // try {
-    //   await this.otpDelivery.sendOtp({ phoneE164: phone, otp });
-    // } catch (error) {
-    //   await this.redis.client.del(`gmatez:otp:phone:${phone}`);
-    //   await this.redis.client.del(cooldownKey);
-    //   throw error;
-    // }
+    try {
+      await this.otpDelivery.sendOtp({ phoneE164: phone, otp });
+    } catch (error) {
+      await this.redis.client.del(`gmatez:otp:phone:${phone}`);
+      await this.redis.client.del(cooldownKey);
+      throw error;
+    }
 
     this.logger.log(
       {
         phone: maskPhone(phone),
-        provider: `paused:${this.otpDelivery.name}`,
+        provider: this.otpDelivery.name,
       },
       'otp.requested',
     );
 
-    return {
-      expiresInSeconds: ttl,
-      resendAvailableInSeconds: cooldown,
-    };
+    const exposeOtp =
+      this.config.allowsMockProviders && process.env.OTP_EXPOSE !== 'false';
+
+    return exposeOtp
+      ? { expiresInSeconds: ttl, resendAvailableInSeconds: cooldown, otp }
+      : { expiresInSeconds: ttl, resendAvailableInSeconds: cooldown };
   }
 
   async verifyPhoneOtp(phoneInput: string, otp: string, clientIp = 'unknown') {
@@ -408,10 +416,38 @@ export class AuthService {
     await this.redis.client.del(key);
     await this.redis.client.del(`gmatez:otp:cooldown:${phone}`);
 
+    return this.loginOrRegisterByPhone(phone);
+  }
+
+  /**
+   * Product auth path: Firebase phone-auth token verify.
+   * Firebase owns sending/checking the SMS code client-side; this only
+   * verifies the resulting token and maps it to a local user by phone.
+   */
+  async verifyFirebasePhoneToken(idToken: string, clientIp = 'unknown') {
+    await this.rateLimit.assertAllowed({
+      key: `gmatez:ratelimit:phoneauth:ip:${clientIp}:verify`,
+      limit: this.config.get('OTP_MAX_VERIFY_PER_WINDOW'),
+      windowSeconds: this.config.get('OTP_VERIFY_WINDOW_SECONDS'),
+      code: ErrorCodes.OTP_RATE_LIMITED,
+      message: 'Please try again later.',
+    });
+
+    const { phoneE164 } = await this.phoneIdentityVerifier.verify(idToken);
+    const phone = this.normalizePhone(phoneE164);
+    return this.loginOrRegisterByPhone(phone);
+  }
+
+  /**
+   * Shared by both phone-verification paths (OTP and Firebase token).
+   * The phone has already been proven to belong to the caller — this just
+   * finds or creates the local user record and issues a session.
+   */
+  private async loginOrRegisterByPhone(phone: string) {
     const existing = await this.prisma.user.findUnique({ where: { phone } });
     if (existing) {
       this.assertAccountEligible(existing.status);
-      this.logger.log({ userId: existing.id }, 'otp.verified');
+      this.logger.log({ userId: existing.id }, 'phone_auth.verified');
       return this.issueSession(existing.id, existing.role);
     }
 
@@ -433,7 +469,7 @@ export class AuthService {
           },
         },
       });
-      this.logger.log({ userId: user.id }, 'otp.verified');
+      this.logger.log({ userId: user.id }, 'phone_auth.verified');
       return this.issueSession(user.id, user.role);
     } catch (error) {
       const code = (error as { code?: string }).code;
@@ -488,11 +524,16 @@ export class AuthService {
     return String(randomInt(min, max));
   }
 
-  private resolveOutboundOtp(): string {
-    // Twilio SMS is paused. Every phone login accepts this code.
-    const length = this.config.get('OTP_LENGTH');
-    if (length === 6) {
-      return '123456';
+  /**
+   * The mock OTP provider can only be selected when NODE_ENV=test (enforced by
+   * loadConfig), so MOCK_OTP can never produce a predictable code outside tests.
+   */
+  private resolveOtp(): string {
+    if (this.otpDelivery.name === 'mock') {
+      const mockOtp = this.config.get('MOCK_OTP');
+      if (mockOtp) {
+        return mockOtp;
+      }
     }
     return this.generateOtp();
   }

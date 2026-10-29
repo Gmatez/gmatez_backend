@@ -63,6 +63,13 @@ export class PhoneOtpVerifyDto {
   otp!: string;
 }
 
+export class PhoneFirebaseVerifyDto {
+  @ApiProperty({ example: 'eyJhbGciOiJSUzI1NiIsImtpZCI6...' })
+  @IsString()
+  @MinLength(20)
+  idToken!: string;
+}
+
 export class OtpVerifyDto {
   @ApiProperty()
   @IsEmail()
@@ -135,7 +142,10 @@ export class AuthController {
 
   @Public()
   @HttpCode(200)
-  @ApiOperation({ summary: 'Request phone OTP (product authentication)' })
+  @ApiOperation({
+    deprecated: true,
+    summary: 'Request phone OTP (superseded by Firebase phone auth)',
+  })
   @Post('phone/otp/request')
   requestPhoneOtp(
     @Body() body: PhoneOtpRequestDto,
@@ -147,10 +157,26 @@ export class AuthController {
   @Public()
   @HttpCode(200)
   @ApiOperation({
-    summary: 'Verify phone OTP — login or register (product authentication)',
+    deprecated: true,
+    summary:
+      'Verify phone OTP — login or register (superseded by Firebase phone auth)',
   })
   @Post('phone/otp/verify')
   verifyPhoneOtp(@Body() body: PhoneOtpVerifyDto, @Req() req: FastifyRequest) {
     return this.auth.verifyPhoneOtp(body.phone, body.otp, req.ip);
+  }
+
+  @Public()
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Verify Firebase phone-auth ID token — login or register (product authentication)',
+  })
+  @Post('phone/firebase/verify')
+  verifyFirebasePhoneToken(
+    @Body() body: PhoneFirebaseVerifyDto,
+    @Req() req: FastifyRequest,
+  ) {
+    return this.auth.verifyFirebasePhoneToken(body.idToken, req.ip);
   }
 }

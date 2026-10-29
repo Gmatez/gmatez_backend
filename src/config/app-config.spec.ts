@@ -15,6 +15,7 @@ const smsEnv = {
   SMS_PROVIDER: 'msg91' as const,
   MSG91_AUTH_KEY: 'test-auth-key',
   MSG91_TEMPLATE_ID: 'test-template-id',
+  PHONE_AUTH_PROVIDER: 'firebase' as const,
 };
 
 describe('loadConfig production safety', () => {
@@ -41,6 +42,7 @@ describe('loadConfig production safety', () => {
         ...baseEnv,
         NODE_ENV: 'production',
         OTP_PROVIDER: 'mock',
+        PHONE_AUTH_PROVIDER: 'firebase',
         CALLING_PROVIDER: 'agora',
         PAYMENT_PROVIDER: 'stripe',
         PUSH_PROVIDER: 'fcm',
@@ -58,6 +60,7 @@ describe('loadConfig production safety', () => {
         ...baseEnv,
         NODE_ENV: 'production',
         OTP_PROVIDER: 'sms',
+        PHONE_AUTH_PROVIDER: 'firebase',
         CALLING_PROVIDER: 'agora',
         PAYMENT_PROVIDER: 'stripe',
         PUSH_PROVIDER: 'fcm',
@@ -166,6 +169,7 @@ describe('loadConfig production safety', () => {
         ...baseEnv,
         NODE_ENV: 'staging',
         OTP_PROVIDER: 'mock',
+        PHONE_AUTH_PROVIDER: 'mock',
         CALLING_PROVIDER: 'mock',
         PAYMENT_PROVIDER: 'mock',
         PUSH_PROVIDER: 'mock',
@@ -207,5 +211,23 @@ describe('loadConfig production safety', () => {
     expect(cfg.PAYMENT_PROVIDER).toBe('razorpay');
     expect(cfg.PLATFORM_CURRENCY).toBe('INR');
     expect(cfg.RAZORPAY_KEY_SECRET).toBe('test-secret');
+  });
+
+  it('rejects PHONE_AUTH_PROVIDER=firebase without FIREBASE_SERVICE_ACCOUNT_JSON', () => {
+    expect(() =>
+      loadConfig({
+        ...baseEnv,
+        ...smsEnv,
+        NODE_ENV: 'development',
+        CALLING_PROVIDER: 'agora',
+        PAYMENT_PROVIDER: 'stripe',
+        PUSH_PROVIDER: 'fcm',
+        AGORA_APP_ID: 'app',
+        AGORA_APP_CERTIFICATE: 'cert',
+        STRIPE_SECRET_KEY: 'sk_test_x',
+      }),
+    ).toThrow(
+      /PHONE_AUTH_PROVIDER=firebase requires FIREBASE_SERVICE_ACCOUNT_JSON/,
+    );
   });
 });

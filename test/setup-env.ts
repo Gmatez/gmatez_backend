@@ -22,6 +22,7 @@ process.env.OTP_PEPPER =
   process.env.OTP_PEPPER || 'test-otp-pepper-change-me-32chars';
 process.env.OTP_PROVIDER = 'mock';
 process.env.MOCK_OTP = '123456';
+process.env.PHONE_AUTH_PROVIDER = 'mock';
 process.env.CALLING_PROVIDER = 'mock';
 process.env.PAYMENT_PROVIDER = 'mock';
 process.env.PUSH_PROVIDER = 'mock';

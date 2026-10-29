@@ -21,6 +21,13 @@ import { MockOtpDeliveryProvider } from './otp/mock-otp.provider';
 import { Msg91OtpDeliveryProvider } from './otp/msg91-otp.provider';
 import { TwilioOtpDeliveryProvider } from './otp/twilio-otp.provider';
 import { RateLimitService } from '../common/rate-limit/rate-limit.service';
+import { FirebaseAdminService } from './firebase/firebase-admin.service';
+import {
+  PHONE_IDENTITY_VERIFIER,
+  type PhoneIdentityVerifier,
+} from './phone-auth/phone-identity-verifier';
+import { MockPhoneIdentityVerifier } from './phone-auth/mock-phone-identity-verifier';
+import { FirebasePhoneIdentityVerifier } from './phone-auth/firebase-phone-identity-verifier';
 
 @Global()
 @Module({
@@ -36,6 +43,9 @@ import { RateLimitService } from '../common/rate-limit/rate-limit.service';
     MockOtpDeliveryProvider,
     Msg91OtpDeliveryProvider,
     TwilioOtpDeliveryProvider,
+    FirebaseAdminService,
+    MockPhoneIdentityVerifier,
+    FirebasePhoneIdentityVerifier,
     {
       provide: CALLING_PROVIDER,
       useFactory: (
@@ -99,6 +109,20 @@ import { RateLimitService } from '../common/rate-limit/rate-limit.service';
         TwilioOtpDeliveryProvider,
       ],
     },
+    {
+      provide: PHONE_IDENTITY_VERIFIER,
+      useFactory: (
+        config: AppConfigService,
+        mock: MockPhoneIdentityVerifier,
+        firebase: FirebasePhoneIdentityVerifier,
+      ): PhoneIdentityVerifier =>
+        config.get('PHONE_AUTH_PROVIDER') === 'firebase' ? firebase : mock,
+      inject: [
+        AppConfigService,
+        MockPhoneIdentityVerifier,
+        FirebasePhoneIdentityVerifier,
+      ],
+    },
   ],
   exports: [
     RateLimitService,
@@ -106,6 +130,7 @@ import { RateLimitService } from '../common/rate-limit/rate-limit.service';
     PAYMENT_PROVIDER,
     PUSH_PROVIDER,
     OTP_DELIVERY_PROVIDER,
+    PHONE_IDENTITY_VERIFIER,
     MockCallingProvider,
     MockPaymentProvider,
   ],

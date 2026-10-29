@@ -16,6 +16,7 @@ const schema = z.object({
   JWT_REFRESH_TTL: z.string().default('30d'),
   OTP_PROVIDER: z.enum(['mock', 'sms']).optional(),
   SMS_PROVIDER: z.enum(['msg91', 'twilio']).optional(),
+  PHONE_AUTH_PROVIDER: z.enum(['mock', 'firebase']).optional(),
   CALLING_PROVIDER: z.enum(['mock', 'agora']).optional(),
   PAYMENT_PROVIDER: z.enum(['mock', 'stripe', 'razorpay']).optional(),
   PUSH_PROVIDER: z.enum(['mock', 'fcm']).optional(),
@@ -90,6 +91,7 @@ const schema = z.object({
 
 export type AppConfig = z.infer<typeof schema> & {
   OTP_PROVIDER: 'mock' | 'sms';
+  PHONE_AUTH_PROVIDER: 'mock' | 'firebase';
   CALLING_PROVIDER: 'mock' | 'agora';
   PAYMENT_PROVIDER: 'mock' | 'stripe' | 'razorpay';
   PLATFORM_CURRENCY: 'INR' | 'USD';
@@ -133,6 +135,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       nodeEnv,
       'OTP_PROVIDER',
     ),
+    PHONE_AUTH_PROVIDER: resolveProvider(
+      raw.PHONE_AUTH_PROVIDER,
+      'mock',
+      nodeEnv,
+      'PHONE_AUTH_PROVIDER',
+    ),
     CALLING_PROVIDER: resolveProvider(
       raw.CALLING_PROVIDER,
       'mock',
@@ -158,6 +166,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   const mocks: Array<[string, string]> = [];
   if (cfg.OTP_PROVIDER === 'mock') mocks.push(['OTP_PROVIDER', 'mock']);
+  if (cfg.PHONE_AUTH_PROVIDER === 'mock')
+    mocks.push(['PHONE_AUTH_PROVIDER', 'mock']);
   if (cfg.CALLING_PROVIDER === 'mock') mocks.push(['CALLING_PROVIDER', 'mock']);
   if (cfg.PAYMENT_PROVIDER === 'mock') mocks.push(['PAYMENT_PROVIDER', 'mock']);
   if (cfg.PUSH_PROVIDER === 'mock') mocks.push(['PUSH_PROVIDER', 'mock']);
@@ -231,6 +241,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         'Invalid configuration: PUSH_PROVIDER=fcm requires FIREBASE_SERVICE_ACCOUNT_JSON in production',
       );
     }
+  }
+
+  if (
+    cfg.PHONE_AUTH_PROVIDER === 'firebase' &&
+    !cfg.FIREBASE_SERVICE_ACCOUNT_JSON
+  ) {
+    throw new Error(
+      'Invalid configuration: PHONE_AUTH_PROVIDER=firebase requires FIREBASE_SERVICE_ACCOUNT_JSON',
+    );
   }
 
   return cfg;
