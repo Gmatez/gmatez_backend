@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { HttpStatus, Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import {
   FastifyAdapter,
@@ -6,9 +6,11 @@ import {
 } from '@nestjs/platform-fastify';
 import helmet from '@fastify/helmet';
 import compress from '@fastify/compress';
+import type { FastifyError, FastifyReply, FastifyRequest } from 'fastify';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { loadConfig } from './config/app-config';
+import { ErrorCodes } from './common/errors/app-error';
 import { RedisIoAdapter } from './realtime/redis-io.adapter';
 
 function registerEmptySafeJsonParser(adapter: FastifyAdapter): void {
@@ -34,6 +36,46 @@ function registerEmptySafeJsonParser(adapter: FastifyAdapter): void {
       }
     },
   );
+}
+
+/**
+ * Fastify can reject a request before it ever reaches Nest's own request
+ * pipeline — so GlobalExceptionFilter, which only sees exceptions thrown
+ * inside that pipeline, never gets a chance to shape the response.
+ * Confirmed by chaos testing: an oversized path parameter returned
+ * Fastify's native `{"error":"Bad Request","code":"FST_ERR_..."}` shape
+ * instead of this app's `{"error":{"code","message"}}` convention used
+ * everywhere else. This is the shared shaping logic both hooks below use
+ * so every response looks the same regardless of which layer rejected it.
+ */
+function sendShapedError(
+  error: FastifyError,
+  request: FastifyRequest,
+  reply: FastifyReply,
+): void {
+  const status =
+    typeof error.statusCode === 'number'
+      ? error.statusCode
+      : HttpStatus.INTERNAL_SERVER_ERROR;
+  reply.status(status).send({
+    error: {
+      code:
+        status >= 500
+          ? ErrorCodes.INTERNAL
+          : status === 401
+            ? ErrorCodes.UNAUTHENTICATED
+            : ErrorCodes.VALIDATION_FAILED,
+      message: error.message,
+      requestId: request.id,
+    },
+  });
+}
+
+// Catches any other Fastify-level error that reaches this hook (most
+// in-pipeline errors never do — Nest's own route-handler wrapper catches
+// those and routes them to GlobalExceptionFilter directly).
+function registerFastifyErrorShape(adapter: FastifyAdapter): void {
+  adapter.getInstance().setErrorHandler(sendShapedError);
 }
 
 async function bootstrap() {
@@ -67,9 +109,16 @@ async function bootstrap() {
     genReqId: (req: { headers: Record<string, unknown> }) =>
       (req.headers['x-request-id'] as string | undefined) ??
       crypto.randomUUID(),
+    // FST_ERR_BAD_URL / FST_ERR_MAX_PARAM_LENGTH / FST_ERR_ASYNC_CONSTRAINT
+    // are thrown by Fastify's router before a request reaches setErrorHandler
+    // at all — this is the only hook that can reshape them (confirmed by
+    // chaos testing: without this, an oversized path param returned
+    // Fastify's raw error shape no matter what registerFastifyErrorShape did).
+    frameworkErrors: sendShapedError,
   });
 
   registerEmptySafeJsonParser(adapter);
+  registerFastifyErrorShape(adapter);
 
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
