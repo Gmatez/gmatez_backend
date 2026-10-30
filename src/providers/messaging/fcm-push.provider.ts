@@ -31,11 +31,12 @@ export class FcmPushProvider implements PushProvider {
       // `firebase-admin/messaging`) — `admin.apps`/`admin.messaging()` no
       // longer exist on `require('firebase-admin')`.
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { initializeApp, cert, getApps } = require('firebase-admin/app') as {
+      const appModule = require('firebase-admin/app') as {
         initializeApp: (opts: { credential: unknown }) => unknown;
         cert: (json: unknown) => unknown;
         getApps: () => unknown[];
       };
+      const { initializeApp, cert, getApps } = appModule;
       let app = getApps()[0];
       if (!app) {
         const json = JSON.parse(normalizeServiceAccount(creds)) as Record<

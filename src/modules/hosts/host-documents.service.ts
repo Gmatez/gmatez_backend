@@ -274,8 +274,17 @@ export class HostDocumentsService {
     return data;
   }
 
+  /** Removes every identity/avatar document stored on disk for a user. */
+  async deleteAll(userId: string): Promise<void> {
+    await fs.rm(this.userDir(userId), { recursive: true, force: true });
+  }
+
+  private userDir(userId: string) {
+    return join(process.cwd(), 'storage', 'private', 'hosts', userId);
+  }
+
   private path(userId: string, kind: string) {
-    return join(process.cwd(), 'storage', 'private', 'hosts', userId, kind);
+    return join(this.userDir(userId), kind);
   }
 
   private async write(userId: string, kind: string, data: Buffer) {

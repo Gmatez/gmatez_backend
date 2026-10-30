@@ -5,7 +5,7 @@ type AdminAuth = {
   verifyIdToken: (idToken: string) => Promise<Record<string, unknown>>;
 };
 
-type AdminApp = unknown;
+type AdminApp = object;
 
 /**
  * Shared firebase-admin app initialization for all Firebase-backed providers
@@ -29,11 +29,12 @@ export class FirebaseAdminService {
     }
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { initializeApp, cert, getApps } = require('firebase-admin/app') as {
+      const appModule = require('firebase-admin/app') as {
         initializeApp: (opts: { credential: unknown }) => AdminApp;
         cert: (json: unknown) => unknown;
         getApps: () => AdminApp[];
       };
+      const { initializeApp, cert, getApps } = appModule;
       const existing = getApps();
       if (existing.length) {
         this.app = existing[0];

@@ -1,15 +1,23 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import * as argon2 from 'argon2';
+import { randomUUID } from 'node:crypto';
 import { AppError, ErrorCodes } from '../../common/errors/app-error';
 import { PrismaService } from '../../database/prisma.service';
 import { RedisService } from '../../redis/redis.service';
+import { CallingService } from '../calling/calling.service';
+import { HostDocumentsService } from '../hosts/host-documents.service';
 import { toPublicProfile } from '../profiles/profile.presenter';
 import { nextLastActiveAt } from './activity';
 
 @Injectable()
 export class UsersService {
+  private readonly logger = new Logger(UsersService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
+    private readonly calling: CallingService,
+    private readonly hostDocuments: HostDocumentsService,
   ) {}
 
   async getMe(userId: string) {
@@ -139,16 +147,60 @@ export class UsersService {
     });
   }
 
+  /**
+   * Self-service "right to erasure" deletion. Hard-deleting the User row
+   * is not possible once a user has any history: Payment, Call, Report,
+   * Conversation, and PayoutRequest all use onDelete: Restrict, by design
+   * (financial/dispute records must survive). This anonymizes every PII
+   * field in place instead, deletes purely personal rows that don't carry
+   * compliance weight (sessions, push tokens, on-disk ID documents), and
+   * leaves the restricted rows' foreign keys intact with their own PII
+   * (PayoutDestination.detailsJson) scrubbed separately.
+   */
   async deleteMe(userId: string): Promise<void> {
+    const activeCall = await this.calling.findActiveCallForUser(userId);
+    if (activeCall) {
+      throw new AppError(
+        ErrorCodes.CONFLICT,
+        'End your active call before deleting your account',
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    // argon2.verify() is called unconditionally on every login attempt
+    // before the account-status check, so this must stay a structurally
+    // valid hash (of a value nobody can know) rather than garbage, or a
+    // deleted account's login attempts would 500 instead of 401.
+    const deadPasswordHash = await argon2.hash(randomUUID());
+
     await this.prisma.$transaction([
       this.prisma.refreshToken.updateMany({
         where: { userId, revokedAt: null },
         data: { revokedAt: new Date() },
       }),
       this.prisma.deviceToken.deleteMany({ where: { userId } }),
+      this.prisma.payoutDestination.updateMany({
+        where: { userId },
+        data: { label: '', detailsJson: {} },
+      }),
       this.prisma.hostProfile.updateMany({
         where: { userId },
-        data: { status: 'SUSPENDED', availability: 'OFFLINE' },
+        data: {
+          status: 'SUSPENDED',
+          availability: 'OFFLINE',
+          applicationBio: '',
+          reviewNote: null,
+          internalNote: null,
+          languages: [],
+          interests: [],
+          idProofType: null,
+          idProofLast4: null,
+          idProofMime: null,
+          identityCardNumber: null,
+          identityFrontMime: null,
+          identityBackMime: null,
+          profileImageMime: null,
+        },
       }),
       this.prisma.profile.update({
         where: { userId },
@@ -156,6 +208,8 @@ export class UsersService {
           displayName: 'Deleted user',
           bio: '',
           avatarUrl: null,
+          country: null,
+          language: null,
           isDiscoverable: false,
         },
       }),
@@ -164,8 +218,31 @@ export class UsersService {
         data: {
           status: 'DELETED',
           email: `deleted+${userId}@invalid.local`,
+          phone: null,
+          passwordHash: deadPasswordHash,
+        },
+      }),
+      this.prisma.auditLog.create({
+        data: {
+          actorId: userId,
+          action: 'user.self_delete',
+          targetType: 'user',
+          targetId: userId,
+          metadata: { reason: 'self_service_erasure' },
         },
       }),
     ]);
+
+    try {
+      await this.hostDocuments.deleteAll(userId);
+    } catch (error) {
+      this.logger.error(
+        {
+          userId,
+          err: error instanceof Error ? error.message : 'unknown',
+        },
+        'user.delete_documents_failed',
+      );
+    }
   }
 }
