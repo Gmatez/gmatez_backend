@@ -17,8 +17,13 @@ services:
 
   redis:
     image: redis:7-alpine
+    # Host port 6379 is already taken by an unrelated project's Redis
+    # container on this machine — this service silently started without
+    # ever actually binding to the host (confirmed via chaos testing: the
+    # backend's REDIS_URL pointed at 6379 and was reaching that *other*
+    # project's Redis instead of this one). 6380 avoids the collision.
     ports:
-      - "6379:6379"
+      - "6380:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

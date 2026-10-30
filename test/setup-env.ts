@@ -9,7 +9,7 @@ process.env.DATABASE_URL =
     '/social_calling_test$1',
   ) ||
   'postgresql://ubuntu:postgres@127.0.0.1:5432/social_calling_test?schema=public';
-process.env.REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
+process.env.REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6380';
 process.env.JWT_ACCESS_SECRET =
   process.env.JWT_ACCESS_SECRET || 'test-access-secret-change-me-32chars';
 process.env.JWT_REFRESH_SECRET =
