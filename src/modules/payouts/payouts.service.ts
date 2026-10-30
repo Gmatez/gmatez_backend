@@ -78,6 +78,15 @@ export class PayoutsService {
           where: { userId, status: { in: ['REQUESTED', 'PROCESSING'] } },
         });
         if (pendingInTx) {
+          // Two concurrent requests sharing an idempotencyKey both pass the
+          // (unlocked) checks above, then serialize on the wallet row lock
+          // below — the loser lands here and sees the winner's own
+          // just-committed row. That's not a real conflict; return it
+          // instead of a 409, same as the idempotency check earlier in
+          // this method would have if it had run after the winner's commit.
+          if (pendingInTx.idempotencyKey === idempotencyKey) {
+            return pendingInTx;
+          }
           throw new AppError(
             ErrorCodes.PAYOUT_NOT_ELIGIBLE,
             'A payout is already pending',

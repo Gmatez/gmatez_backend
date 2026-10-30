@@ -33,6 +33,7 @@ describe('recharge plans', () => {
       priceMinor: 25000,
       walletCreditMinor: 27500,
       bonusMinor: 2500,
+      coins: 2750,
     });
     expect(created.name).toBe('Standard');
     expect(prisma.auditLog.create).toHaveBeenCalledWith(

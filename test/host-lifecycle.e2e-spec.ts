@@ -32,10 +32,40 @@ describe('host lifecycle (e2e)', () => {
     { agreementType: 'PRIVACY_POLICY', version: '1.0' },
   ];
 
+  async function uploadIdentityDocuments(token: string) {
+    const fakeImage = (seed: number) =>
+      Buffer.alloc(40, seed).toString('base64');
+    for (const doc of [
+      { kind: 'identity-front', mime: 'image/png', dataBase64: fakeImage(1) },
+      { kind: 'identity-back', mime: 'image/png', dataBase64: fakeImage(2) },
+      { kind: 'profile-image', mime: 'image/png', dataBase64: fakeImage(3) },
+    ]) {
+      const upload = await app.inject({
+        method: 'POST',
+        url: '/api/v1/hosts/application-documents',
+        headers: { authorization: `Bearer ${token}` },
+        payload:
+          doc.kind === 'identity-front'
+            ? { ...doc, identityCardNumber: 'TEST1234', idProofType: 'AADHAAR' }
+            : doc,
+      });
+      expect(upload.statusCode).toBe(201);
+    }
+  }
+
   it('rejects activation when host is incomplete', async () => {
     const bob = await registerUser(app, 'bob@example.com', 'Bob');
     const bobUser = await me(app, bob.accessToken);
     const admin = await adminSession();
+    // Identity documents (including a profile image) are required before
+    // /hosts/applications accepts a submission at all, and that profile
+    // image also satisfies the completeness check's own avatar
+    // requirement — so an application can no longer succeed while
+    // leaving the host avatar-incomplete. Clear it back out via Prisma
+    // after a valid apply to isolate what this test actually checks:
+    // that admin activation independently re-validates completeness,
+    // not just that the apply endpoint does.
+    await uploadIdentityDocuments(bob.accessToken);
 
     const apply = await app.inject({
       method: 'POST',
@@ -53,6 +83,10 @@ describe('host lifecycle (e2e)', () => {
       },
     });
     expect(apply.statusCode).toBe(201);
+    await prisma.hostProfile.update({
+      where: { userId: bobUser.id },
+      data: { profileImageMime: null },
+    });
 
     const approve = await app.inject({
       method: 'PATCH',
@@ -120,6 +154,7 @@ describe('host lifecycle (e2e)', () => {
       headers: { authorization: `Bearer ${bob.accessToken}` },
       payload: { avatarUrl: 'https://cdn.example.com/a.png' },
     });
+    await uploadIdentityDocuments(bob.accessToken);
     const payload = {
       applicationBio: 'Ready to listen carefully every day.',
       languages: ['en'],
