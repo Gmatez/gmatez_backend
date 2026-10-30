@@ -45,77 +45,105 @@ export class PaymentsService {
         'Minimum top-up is 100 minor units',
       );
     }
-    const existing = await this.prisma.payment.findUnique({
-      where: { idempotencyKey },
-    });
-    if (existing) {
-      if (existing.userId !== userId) {
-        throw new AppError(
-          ErrorCodes.FORBIDDEN,
-          'Idempotency key already used',
-          HttpStatus.CONFLICT,
-        );
-      }
-      return this.present(existing);
-    }
-
     await this.wallet.ensureForUser(userId);
-    const intent = await this.provider.createIntent({
-      amountCents: priced.amountCents,
-      currency,
-      userId,
-      idempotencyKey,
-    });
 
-    try {
-      const payment = await this.prisma.payment.create({
-        data: {
-          userId,
-          amountCents: priced.amountCents,
-          creditCents: priced.creditCents,
-          rechargePlanId: priced.rechargePlanId,
-          currency,
-          status:
-            this.provider.name === 'razorpay' ? 'REQUIRES_ACTION' : 'PENDING',
-          provider: this.provider.name,
-          providerPaymentId: intent.providerPaymentId,
+    // Serialize concurrent createIntent calls sharing an idempotencyKey so
+    // the "does it exist?" check and the provider call + row creation are
+    // atomic together — otherwise multiple racing requests (a double-tap,
+    // a client retry overlapping an in-flight request) can all pass the
+    // check and all call the payment provider simultaneously. Confirmed by
+    // chaos testing: Razorpay's own duplicate-request handling has a
+    // failure window, surfacing as an unhandled 500 for the loser even
+    // though a sibling request already succeeded. Transaction-scoped lock
+    // so it auto-releases on commit/rollback — same pattern as
+    // CallingService.createCall's advisory lock. The transaction timeout
+    // is extended because, unlike that lock, this one has to stay held
+    // across an external HTTP call to the payment provider.
+    return this.prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRawUnsafe(
+          'SELECT pg_advisory_xact_lock(hashtext($1))',
           idempotencyKey,
-          clientSecret:
-            this.provider.name === 'razorpay' ? null : intent.clientSecret,
-          reconciliationStatus: 'PENDING',
-        },
-      });
-      this.logger.log({
-        event: 'payment_created',
-        paymentId: payment.id,
-        userId,
-        amountCents: payment.amountCents,
-        currency: payment.currency,
-        provider: payment.provider,
-        orderId: payment.providerPaymentId,
-      });
-      if (payment.provider === 'razorpay') {
-        this.logger.log({
-          event: 'payment_checkout_started',
-          paymentId: payment.id,
-          orderId: payment.providerPaymentId,
-        });
-      }
-      return this.present(payment);
-    } catch (error) {
-      if (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2002'
-      ) {
-        const payment = await this.prisma.payment.findUnique({
+        );
+        const existing = await tx.payment.findUnique({
           where: { idempotencyKey },
         });
-        if (payment) {
-          return this.present(payment);
+        if (existing) {
+          if (existing.userId !== userId) {
+            throw new AppError(
+              ErrorCodes.FORBIDDEN,
+              'Idempotency key already used',
+              HttpStatus.CONFLICT,
+            );
+          }
+          return this.present(existing);
         }
-      }
-      throw error;
-    }
+
+        const intent = await this.provider.createIntent({
+          amountCents: priced.amountCents,
+          currency,
+          userId,
+          idempotencyKey,
+        });
+
+        try {
+          const payment = await tx.payment.create({
+            data: {
+              userId,
+              amountCents: priced.amountCents,
+              creditCents: priced.creditCents,
+              rechargePlanId: priced.rechargePlanId,
+              currency,
+              status:
+                this.provider.name === 'razorpay'
+                  ? 'REQUIRES_ACTION'
+                  : 'PENDING',
+              provider: this.provider.name,
+              providerPaymentId: intent.providerPaymentId,
+              idempotencyKey,
+              clientSecret:
+                this.provider.name === 'razorpay' ? null : intent.clientSecret,
+              reconciliationStatus: 'PENDING',
+            },
+          });
+          this.logger.log({
+            event: 'payment_created',
+            paymentId: payment.id,
+            userId,
+            amountCents: payment.amountCents,
+            currency: payment.currency,
+            provider: payment.provider,
+            orderId: payment.providerPaymentId,
+          });
+          if (payment.provider === 'razorpay') {
+            this.logger.log({
+              event: 'payment_checkout_started',
+              paymentId: payment.id,
+              orderId: payment.providerPaymentId,
+            });
+          }
+          return this.present(payment);
+        } catch (error) {
+          // Defense in depth: hashtext() could theoretically collide two
+          // different idempotencyKeys onto the same lock, so a unique-
+          // constraint race is still handled even though the lock should
+          // make it unreachable in practice.
+          if (
+            error instanceof Prisma.PrismaClientKnownRequestError &&
+            error.code === 'P2002'
+          ) {
+            const payment = await tx.payment.findUnique({
+              where: { idempotencyKey },
+            });
+            if (payment) {
+              return this.present(payment);
+            }
+          }
+          throw error;
+        }
+      },
+      { timeout: 15_000 },
+    );
   }
 
   /**

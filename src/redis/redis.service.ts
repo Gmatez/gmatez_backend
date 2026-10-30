@@ -1,15 +1,37 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import Redis from 'ioredis';
 import { AppConfigService } from '../config/app-config';
 
 @Injectable()
 export class RedisService implements OnModuleDestroy {
+  private readonly logger = new Logger(RedisService.name);
   readonly client: Redis;
 
   constructor(config: AppConfigService) {
     this.client = new Redis(config.get('REDIS_URL'), {
-      maxRetriesPerRequest: 3,
+      // null, not a number: once maxRetriesPerRequest is reached, ioredis
+      // flushes every queued command's promise with MaxRetriesPerRequestError
+      // — including its own internal ready-check command, which nothing
+      // in this codebase awaits/catches, so that rejection goes unhandled
+      // and crashes the whole process. Confirmed by chaos testing: a
+      // finite retry count here crashed the backend even with the
+      // 'error' listener below already attached. null means ioredis
+      // retries forever in the background instead of ever giving up and
+      // rejecting in-flight commands — the same setting already used for
+      // this app's BullMQ connections in queue.service.ts, for the same
+      // reason. A command issued while Redis is down will hang rather
+      // than fail fast, which is the right trade: one slow request beats
+      // bringing down every other request on the process.
+      maxRetriesPerRequest: null,
       enableReadyCheck: true,
+    });
+    // ioredis emits 'error' on every connection hiccup (not just a full
+    // outage). With no listener attached, Node treats that as an uncaught
+    // exception and kills the whole process — confirmed by chaos testing:
+    // a single unreachable Redis crashed the entire backend, not just
+    // Redis-dependent features.
+    this.client.on('error', (err) => {
+      this.logger.error({ err: err.message }, 'redis.connection_error');
     });
   }
 
