@@ -1,6 +1,12 @@
 import { Body, Controller, HttpCode, Post, Req } from '@nestjs/common';
 import { ApiOperation, ApiProperty, ApiTags } from '@nestjs/swagger';
-import { IsEmail, IsString, Matches, MinLength } from 'class-validator';
+import {
+  IsEmail,
+  IsString,
+  Matches,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
 import type { FastifyRequest } from 'fastify';
 import { Public } from '../../common/decorators/public.decorator';
 import { AuthService } from './auth.service';
@@ -10,9 +16,10 @@ export class RegisterDto {
   @IsEmail()
   email!: string;
 
-  @ApiProperty({ minLength: 10 })
+  @ApiProperty({ minLength: 10, maxLength: 128 })
   @IsString()
   @MinLength(10)
+  @MaxLength(128)
   password!: string;
 
   @ApiProperty({ example: 'Alice' })
@@ -26,9 +33,10 @@ export class LoginDto {
   @IsEmail()
   email!: string;
 
-  @ApiProperty()
+  @ApiProperty({ maxLength: 128 })
   @IsString()
   @MinLength(10)
+  @MaxLength(128)
   password!: string;
 }
 
