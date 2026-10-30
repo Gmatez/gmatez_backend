@@ -5,22 +5,22 @@ type AdminAuth = {
   verifyIdToken: (idToken: string) => Promise<Record<string, unknown>>;
 };
 
-type AdminModule = {
-  apps: unknown[];
-  initializeApp: (opts: { credential: unknown }) => void;
-  credential: { cert: (json: unknown) => unknown };
-  auth: () => AdminAuth;
-};
+type AdminApp = unknown;
 
 /**
  * Shared firebase-admin app initialization for all Firebase-backed providers
  * (FCM push, Firebase phone-auth token verification, ...).
  * CONFIG_REQUIRED: FIREBASE_SERVICE_ACCOUNT_JSON must be valid service-account JSON.
+ *
+ * firebase-admin v12+ dropped the legacy `admin.apps`/`admin.credential.cert`/
+ * `admin.auth()` namespace from the root `require('firebase-admin')` export —
+ * initialization and per-service accessors now live on modular subpaths
+ * (`firebase-admin/app`, `firebase-admin/auth`).
  */
 @Injectable()
 export class FirebaseAdminService {
   private readonly logger = new Logger(FirebaseAdminService.name);
-  private admin: AdminModule | null = null;
+  private app: AdminApp | null = null;
 
   constructor(private readonly config: AppConfigService) {
     const creds = this.config.get('FIREBASE_SERVICE_ACCOUNT_JSON');
@@ -29,15 +29,21 @@ export class FirebaseAdminService {
     }
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const admin = require('firebase-admin') as AdminModule;
-      if (!admin.apps.length) {
+      const { initializeApp, cert, getApps } = require('firebase-admin/app') as {
+        initializeApp: (opts: { credential: unknown }) => AdminApp;
+        cert: (json: unknown) => unknown;
+        getApps: () => AdminApp[];
+      };
+      const existing = getApps();
+      if (existing.length) {
+        this.app = existing[0];
+      } else {
         const json = JSON.parse(normalizeServiceAccount(creds)) as Record<
           string,
           unknown
         >;
-        admin.initializeApp({ credential: admin.credential.cert(json) });
+        this.app = initializeApp({ credential: cert(json) });
       }
-      this.admin = admin;
     } catch (error) {
       this.logger.error(
         { err: error instanceof Error ? error.message : 'unknown' },
@@ -47,12 +53,16 @@ export class FirebaseAdminService {
   }
 
   getAuth(): AdminAuth {
-    if (!this.admin) {
+    if (!this.app) {
       throw new Error(
         'Firebase Admin is not configured (FIREBASE_SERVICE_ACCOUNT_JSON). CONFIG_REQUIRED.',
       );
     }
-    return this.admin.auth();
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getAuth } = require('firebase-admin/auth') as {
+      getAuth: (app: AdminApp) => AdminAuth;
+    };
+    return getAuth(this.app);
   }
 }
 

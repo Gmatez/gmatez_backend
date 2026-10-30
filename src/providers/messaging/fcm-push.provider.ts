@@ -26,21 +26,29 @@ export class FcmPushProvider implements PushProvider {
     }
     try {
       // Lazy require so mock environments need not install/init Firebase.
+      // firebase-admin v12+ moved init + per-service accessors off the root
+      // namespace onto modular subpaths (`firebase-admin/app`,
+      // `firebase-admin/messaging`) — `admin.apps`/`admin.messaging()` no
+      // longer exist on `require('firebase-admin')`.
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const admin = require('firebase-admin') as {
-        apps: unknown[];
-        initializeApp: (opts: { credential: unknown }) => void;
-        credential: { cert: (json: unknown) => unknown };
-        messaging: () => typeof this.messaging;
+      const { initializeApp, cert, getApps } = require('firebase-admin/app') as {
+        initializeApp: (opts: { credential: unknown }) => unknown;
+        cert: (json: unknown) => unknown;
+        getApps: () => unknown[];
       };
-      if (!admin.apps.length) {
+      let app = getApps()[0];
+      if (!app) {
         const json = JSON.parse(normalizeServiceAccount(creds)) as Record<
           string,
           unknown
         >;
-        admin.initializeApp({ credential: admin.credential.cert(json) });
+        app = initializeApp({ credential: cert(json) });
       }
-      this.messaging = admin.messaging() as typeof this.messaging;
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { getMessaging } = require('firebase-admin/messaging') as {
+        getMessaging: (app: unknown) => typeof this.messaging;
+      };
+      this.messaging = getMessaging(app) as typeof this.messaging;
     } catch (error) {
       this.logger.error(
         {

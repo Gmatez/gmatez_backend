@@ -7,9 +7,9 @@ import {
 import helmet from '@fastify/helmet';
 import compress from '@fastify/compress';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import { IoAdapter } from '@nestjs/platform-socket.io';
 import { AppModule } from './app.module';
 import { loadConfig } from './config/app-config';
+import { RedisIoAdapter } from './realtime/redis-io.adapter';
 
 function registerEmptySafeJsonParser(adapter: FastifyAdapter): void {
   // Flutter/Dio often sends Content-Type: application/json with an empty body
@@ -86,7 +86,9 @@ async function bootstrap() {
     credentials: true,
   });
   app.setGlobalPrefix('api/v1', { exclude: ['health', 'ready'] });
-  app.useWebSocketAdapter(new IoAdapter(app));
+  const redisIoAdapter = new RedisIoAdapter(app);
+  await redisIoAdapter.connectToRedis();
+  app.useWebSocketAdapter(redisIoAdapter);
 
   if (config.NODE_ENV !== 'production') {
     const swaggerConfig = new DocumentBuilder()
