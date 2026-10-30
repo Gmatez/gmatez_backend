@@ -82,6 +82,19 @@ export class CallingGateway
         userId: payload.sub,
         presence: 'ONLINE',
       });
+      // Fast signal only — does not affect billing/timeout timing, which
+      // stays governed entirely by the heartbeat-check/extend-hold jobs.
+      const activeCall = await this.calling.findActiveCallForUser(payload.sub);
+      if (activeCall) {
+        const peerId =
+          activeCall.callerId === payload.sub
+            ? activeCall.calleeId
+            : activeCall.callerId;
+        this.realtime.emitToUser(peerId, 'call.peer-reconnected', {
+          callId: activeCall.id,
+          userId: payload.sub,
+        });
+      }
     } catch {
       client.disconnect(true);
     }
@@ -99,6 +112,18 @@ export class CallingGateway
         userId,
         presence: 'OFFLINE',
       });
+      // Fast signal only — see note in handleConnection above.
+      const activeCall = await this.calling.findActiveCallForUser(userId);
+      if (activeCall) {
+        const peerId =
+          activeCall.callerId === userId
+            ? activeCall.calleeId
+            : activeCall.callerId;
+        this.realtime.emitToUser(peerId, 'call.peer-disconnected', {
+          callId: activeCall.id,
+          userId,
+        });
+      }
     }
   }
 

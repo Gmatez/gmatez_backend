@@ -77,13 +77,20 @@ export class NotificationsService implements OnModuleInit {
     },
     opts?: { jobId?: string },
   ) {
-    const prefs = await this.getPreferences(userId);
-    if (!this.isCategoryEnabled(prefs, input.type)) {
-      this.logger.debug(
-        { userId, type: input.type },
-        'notification.suppressed_by_preference',
-      );
-      return null;
+    // An incoming call is not a togglable "notification category" like chat
+    // or promos — it's the only delivery path when the callee's socket is
+    // disconnected (app killed/backgrounded), so it must always be able to
+    // reach the device regardless of the user's preference toggle.
+    const isIncomingCall = input.type === 'incoming_call';
+    if (!isIncomingCall) {
+      const prefs = await this.getPreferences(userId);
+      if (!this.isCategoryEnabled(prefs, input.type)) {
+        this.logger.debug(
+          { userId, type: input.type },
+          'notification.suppressed_by_preference',
+        );
+        return null;
+      }
     }
     const notification = await this.prisma.appNotification.create({
       data: {
@@ -104,7 +111,15 @@ export class NotificationsService implements OnModuleInit {
         data: input.data,
         notificationId: notification.id,
       },
-      opts?.jobId ? { jobId: opts.jobId } : undefined,
+      {
+        ...(opts?.jobId ? { jobId: opts.jobId } : undefined),
+        // A call push that hasn't landed in ~1s is already losing the ring
+        // window — retrying for the queue's default ~31s worst case just
+        // burns the time budget for nothing.
+        ...(isIncomingCall
+          ? { attempts: 2, backoff: { type: 'fixed' as const, delay: 500 } }
+          : undefined),
+      },
     );
     this.realtime.emitToUser(userId, 'notification.received', {
       id: notification.id,

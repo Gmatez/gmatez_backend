@@ -157,6 +157,27 @@ export async function activateHost(input: {
   });
   expect(avatar.statusCode).toBe(200);
 
+  // KYC documents are required before /hosts/applications accepts a
+  // submission (HOST_APPLICATION_INVALID otherwise). Content doesn't need
+  // to be a real image at this layer — see host-documents.service.spec.ts.
+  const fakeImage = (seed: number) => Buffer.alloc(40, seed).toString('base64');
+  for (const doc of [
+    { kind: 'identity-front', mime: 'image/png', dataBase64: fakeImage(1) },
+    { kind: 'identity-back', mime: 'image/png', dataBase64: fakeImage(2) },
+    { kind: 'profile-image', mime: 'image/png', dataBase64: fakeImage(3) },
+  ]) {
+    const upload = await input.app.inject({
+      method: 'POST',
+      url: '/api/v1/hosts/application-documents',
+      headers: { authorization: `Bearer ${input.hostToken}` },
+      payload:
+        doc.kind === 'identity-front'
+          ? { ...doc, identityCardNumber: 'TEST1234', idProofType: 'AADHAAR' }
+          : doc,
+    });
+    expect(upload.statusCode).toBe(201);
+  }
+
   const apply = await input.app.inject({
     method: 'POST',
     url: '/api/v1/hosts/applications',

@@ -496,6 +496,7 @@ export class AdminService {
     actorId: string,
     userRatePerMinuteCents: number,
     hostEarningPerMinuteCents: number,
+    userVideoRatePerMinuteCents?: number | null,
   ) {
     let split;
     try {
@@ -509,6 +510,16 @@ export class AdminService {
         error instanceof Error ? error.message : 'Invalid pricing',
       );
     }
+    if (
+      userVideoRatePerMinuteCents != null &&
+      (!Number.isInteger(userVideoRatePerMinuteCents) ||
+        userVideoRatePerMinuteCents <= 0)
+    ) {
+      throw new AppError(
+        ErrorCodes.VALIDATION_FAILED,
+        'Video rate must be a positive integer minor amount',
+      );
+    }
     const previous = await this.prisma.platformPricing.findUnique({
       where: { id: 'default' },
     });
@@ -518,6 +529,7 @@ export class AdminService {
         userRatePerMinuteCents: split.userRatePerMinuteCents,
         hostEarningPerMinuteCents: split.hostEarningPerMinuteCents,
         hostShareBps: split.hostShareBps,
+        userVideoRatePerMinuteCents: userVideoRatePerMinuteCents ?? null,
         updatedById: actorId,
       },
       create: {
@@ -525,6 +537,7 @@ export class AdminService {
         userRatePerMinuteCents: split.userRatePerMinuteCents,
         hostEarningPerMinuteCents: split.hostEarningPerMinuteCents,
         hostShareBps: split.hostShareBps,
+        userVideoRatePerMinuteCents: userVideoRatePerMinuteCents ?? null,
         updatedById: actorId,
       },
     });
@@ -534,12 +547,14 @@ export class AdminService {
             userRatePerMinuteCents: previous.userRatePerMinuteCents,
             hostEarningPerMinuteCents: previous.hostEarningPerMinuteCents,
             hostShareBps: previous.hostShareBps,
+            userVideoRatePerMinuteCents: previous.userVideoRatePerMinuteCents,
           }
         : null,
       new: {
         userRatePerMinuteCents: next.userRatePerMinuteCents,
         hostEarningPerMinuteCents: next.hostEarningPerMinuteCents,
         hostShareBps: next.hostShareBps,
+        userVideoRatePerMinuteCents: next.userVideoRatePerMinuteCents,
       },
     });
     return {

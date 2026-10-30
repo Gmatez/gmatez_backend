@@ -139,6 +139,15 @@ export class SetPricingDto {
   @ApiProperty()
   @IsInt()
   hostEarningPerMinuteCents!: number;
+
+  @ApiProperty({
+    required: false,
+    description:
+      'Optional override for VIDEO calls. Omit to let video calls fall back to each host’s own video rate instead of the voice rate above.',
+  })
+  @IsOptional()
+  @IsInt()
+  userVideoRatePerMinuteCents?: number;
 }
 
 export class SendNotificationDto {
@@ -634,6 +643,7 @@ export class AdminController {
       actor.userId,
       body.userRatePerMinuteCents,
       body.hostEarningPerMinuteCents,
+      body.userVideoRatePerMinuteCents,
     );
   }
 

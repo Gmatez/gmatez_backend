@@ -568,6 +568,10 @@ model PlatformPricing {
   userRatePerMinuteCents  Int
   hostEarningPerMinuteCents Int
   hostShareBps            Int
+  /// Optional global override for VIDEO calls. When unset, video calls fall
+  /// back to each host's own videoRatePerMinuteCents (never to the voice
+  /// rate above). hostShareBps is reused for both call types.
+  userVideoRatePerMinuteCents Int?
   updatedById             String?
   createdAt               DateTime @default(now())
   updatedAt               DateTime @updatedAt

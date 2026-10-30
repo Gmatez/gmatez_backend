@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { AppError, ErrorCodes } from '../../common/errors/app-error';
 import { AppConfigService } from '../../config/app-config';
 import { PushMessage, PushProvider } from './push-provider';
 
@@ -58,8 +59,10 @@ export class FcmPushProvider implements PushProvider {
       return { successCount: 0, failedTokens: [] };
     }
     if (!this.messaging) {
-      throw new Error(
+      throw new AppError(
+        ErrorCodes.INTERNAL,
         'FCM is not configured (FIREBASE_SERVICE_ACCOUNT_JSON). CONFIG_REQUIRED.',
+        HttpStatus.SERVICE_UNAVAILABLE,
       );
     }
     const result = await this.messaging.sendEachForMulticast(
@@ -89,6 +92,15 @@ export class FcmPushProvider implements PushProvider {
   /**
    * A closed app does not run Dart, so Android must draw the call alert
    * itself. The data block still opens the call when the host taps it.
+   *
+   * Deliberately NO top-level `notification` key here: with one present,
+   * Android renders a plain system-tray banner straight from the OS
+   * whenever the app is backgrounded/killed, and the app's own
+   * onMessageReceived handler (which is what actually draws the
+   * full-screen incoming-call UI) is not guaranteed to run first. A
+   * data-only message guarantees the handler runs. Safe for iOS too: the
+   * explicit apns.payload.aps.alert below defines its own alert
+   * independent of this field.
    */
   private toFcmMessage(tokens: string[], message: PushMessage) {
     const data = stringifyData(message.data ?? {});
@@ -100,10 +112,6 @@ export class FcmPushProvider implements PushProvider {
           ...data,
           title: data.title || message.title,
           body: data.body || message.body,
-        },
-        notification: {
-          title: message.title,
-          body: message.body,
         },
         android: {
           priority: 'high' as const,

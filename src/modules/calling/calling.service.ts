@@ -45,6 +45,13 @@ const RTC_TOKEN_ALLOWED: CallStatus[] = [
   CallStatus.CONNECTED,
 ];
 
+/** Sentinel used to unwind the advisory-locked transaction in createCall(). */
+class ActiveCallExists extends Error {
+  constructor(public readonly active: Call) {
+    super('Active call already exists');
+  }
+}
+
 @Injectable()
 export class CallingService implements OnModuleInit {
   private readonly logger = new Logger(CallingService.name);
@@ -73,7 +80,96 @@ export class CallingService implements OnModuleInit {
       if (job.name === 'extend-hold') {
         await this.extendHoldIfConnected(job.data.callId as string);
       }
+      if (job.name === 'reconcile-sweep') {
+        await this.reconcileStaleCalls();
+      }
     });
+    // Defense-in-depth: catches any call whose heartbeat-check/extend-hold/
+    // ring-timeout job was dropped (worker crash, Redis blip) or never armed
+    // (e.g. a transient failure between transition() and onConnected()).
+    // Re-adding this repeatable job on every boot with a fixed jobId is a
+    // no-op if it already exists, so this is safe to run on every startup.
+    this.queue.callLifecycle
+      .add(
+        'reconcile-sweep',
+        {},
+        { repeat: { every: 20_000 }, jobId: 'reconcile-sweep' },
+      )
+      .catch((error) => {
+        this.logger.error(
+          { err: error instanceof Error ? error.message : 'unknown' },
+          'calling.reconcile_sweep_schedule_failed',
+        );
+      });
+  }
+
+  /**
+   * Scans for calls stuck past where their own lifecycle job should have
+   * already resolved them. Pure safety net — does not change any billing or
+   * timeout semantics, just guarantees nothing can be stuck forever.
+   */
+  async reconcileStaleCalls(): Promise<void> {
+    const now = Date.now();
+    const staleConnected = await this.prisma.call.findMany({
+      where: {
+        status: CallStatus.CONNECTED,
+        updatedAt: { lt: new Date(now - HEARTBEAT_STALE_MS - 30_000) },
+      },
+      select: { id: true },
+    });
+    for (const { id } of staleConnected) {
+      await this.failIfHeartbeatStale(id).catch((error) =>
+        this.logger.error(
+          {
+            callId: id,
+            err: error instanceof Error ? error.message : 'unknown',
+          },
+          'calling.reconcile_heartbeat_failed',
+        ),
+      );
+    }
+
+    const staleRinging = await this.prisma.call.findMany({
+      where: {
+        status: { in: [CallStatus.INITIATED, CallStatus.RINGING] },
+        createdAt: { lt: new Date(now - RING_TIMEOUT_MS - 30_000) },
+      },
+      select: { id: true },
+    });
+    for (const { id } of staleRinging) {
+      await this.timeoutIfStillRinging(id).catch((error) =>
+        this.logger.error(
+          {
+            callId: id,
+            err: error instanceof Error ? error.message : 'unknown',
+          },
+          'calling.reconcile_ring_timeout_failed',
+        ),
+      );
+    }
+
+    const staleHandshake = await this.prisma.call.findMany({
+      where: {
+        status: { in: [CallStatus.ACCEPTED, CallStatus.CONNECTING] },
+        updatedAt: { lt: new Date(now - 60_000) },
+      },
+    });
+    for (const call of staleHandshake) {
+      await this.transition(call.id, CallStatus.FAILED, {
+        source: 'job.reconcile-sweep',
+        extra: { endedAt: new Date(), endReason: 'handshake_stalled' },
+      })
+        .then((updated) => this.settle(updated))
+        .catch((error) =>
+          this.logger.error(
+            {
+              callId: call.id,
+              err: error instanceof Error ? error.message : 'unknown',
+            },
+            'calling.reconcile_handshake_failed',
+          ),
+        );
+    }
   }
 
   async createCall(
@@ -124,11 +220,14 @@ export class CallingService implements OnModuleInit {
     const pricing = await this.prisma.platformPricing.findUnique({
       where: { id: 'default' },
     });
-    const hostRate =
+    // Video and voice have independent rates. The global PlatformPricing
+    // override only applies when an admin has explicitly set a rate for
+    // THIS call type — it must never let a voice override silently apply
+    // to video (or vice versa).
+    const rate =
       callType === CallType.VIDEO
-        ? host.videoRatePerMinuteCents
-        : host.voiceRatePerMinuteCents;
-    const rate = pricing?.userRatePerMinuteCents ?? hostRate;
+        ? (pricing?.userVideoRatePerMinuteCents ?? host.videoRatePerMinuteCents)
+        : (pricing?.userRatePerMinuteCents ?? host.voiceRatePerMinuteCents);
     const shareBps =
       pricing?.hostShareBps ?? this.config.get('CREATOR_SHARE_BPS');
     const minHold = Math.max(rate, 1);
@@ -141,52 +240,70 @@ export class CallingService implements OnModuleInit {
       );
     }
 
-    const active = await this.prisma.call.findFirst({
-      where: {
-        status: { notIn: TERMINAL_CALL_STATUSES },
-        OR: [
-          { callerId },
-          { calleeId: callerId },
-          { callerId: calleeId },
-          { calleeId },
-        ],
-      },
-    });
-    if (active) {
-      if (idempotencyKey && idempotencyKey.length >= 8) {
-        const prior = await this.prisma.call.findUnique({
-          where: { idempotencyKey },
-        });
-        if (prior && prior.callerId === callerId) {
-          const payload = await this.publicCall(prior);
-          return { ...payload, idempotencyKey };
-        }
-      }
-      throw new AppError(
-        ErrorCodes.CALL_ALREADY_ACTIVE,
-        'An active call already exists',
-        HttpStatus.CONFLICT,
-      );
-    }
-
+    // Serialize concurrent createCall attempts that share a participant so
+    // the "active call?" check and the row creation are atomic together.
+    // Advisory locks are transaction-scoped (auto-release on commit/rollback)
+    // and sorted to avoid lock-ordering deadlocks when A calls B and B calls
+    // A at the same moment.
+    const [lockA, lockB] = [callerId, calleeId].sort();
     let call;
     try {
-      call = await this.prisma.call.create({
-        data: {
-          callerId,
-          calleeId,
-          callType,
-          status: CallStatus.INITIATED,
-          provider: this.provider.name,
-          providerSessionId: `pending_${crypto.randomUUID()}`,
-          ratePerMinuteCents: rate,
-          creatorShareBps: shareBps,
-          ...(idempotencyKey && idempotencyKey.length >= 8
-            ? { idempotencyKey }
-            : {}),
-        },
+      call = await this.prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(
+          'SELECT pg_advisory_xact_lock(hashtext($1))',
+          lockA,
+        );
+        await tx.$executeRawUnsafe(
+          'SELECT pg_advisory_xact_lock(hashtext($1))',
+          lockB,
+        );
+        const active = await tx.call.findFirst({
+          where: {
+            status: { notIn: TERMINAL_CALL_STATUSES },
+            OR: [
+              { callerId },
+              { calleeId: callerId },
+              { callerId: calleeId },
+              { calleeId },
+            ],
+          },
+        });
+        if (active) {
+          throw new ActiveCallExists(active);
+        }
+        return tx.call.create({
+          data: {
+            callerId,
+            calleeId,
+            callType,
+            status: CallStatus.INITIATED,
+            provider: this.provider.name,
+            providerSessionId: `pending_${crypto.randomUUID()}`,
+            ratePerMinuteCents: rate,
+            creatorShareBps: shareBps,
+            ...(idempotencyKey && idempotencyKey.length >= 8
+              ? { idempotencyKey }
+              : {}),
+          },
+        });
       });
     } catch (error) {
+      if (error instanceof ActiveCallExists) {
+        if (idempotencyKey && idempotencyKey.length >= 8) {
+          const prior = await this.prisma.call.findUnique({
+            where: { idempotencyKey },
+          });
+          if (prior && prior.callerId === callerId) {
+            const payload = await this.publicCall(prior);
+            return { ...payload, idempotencyKey };
+          }
+        }
+        throw new AppError(
+          ErrorCodes.CALL_ALREADY_ACTIVE,
+          'An active call already exists',
+          HttpStatus.CONFLICT,
+        );
+      }
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002' &&
@@ -253,18 +370,35 @@ export class CallingService implements OnModuleInit {
       String(payload.callType ?? '').toUpperCase() === 'VIDEO'
         ? 'video call'
         : 'voice call';
-    await this.notifications.notifyUser(calleeId, {
-      type: 'incoming_call',
-      title: 'Incoming call',
-      body: `${callerName} is calling`,
-      data: {
+    // The call already exists, is RINGING, and has been emitted over
+    // realtime — a push-delivery failure must never turn an otherwise
+    // successful call creation into a 500 for the caller.
+    await this.notifications
+      .notifyUser(calleeId, {
         type: 'incoming_call',
-        callId: call.id,
-        callType: String(payload.callType ?? ''),
         title: 'Incoming call',
-        body: `${callerName} started a ${callLabel}`,
-      },
-    });
+        body: `${callerName} is calling`,
+        data: {
+          type: 'incoming_call',
+          callId: call.id,
+          callerId,
+          callerDisplayName: callerName,
+          callerAvatarUrl: payload.callerAvatarUrl ?? '',
+          callType: String(payload.callType ?? ''),
+          ringTimeoutMs: String(RING_TIMEOUT_MS),
+          title: 'Incoming call',
+          body: `${callerName} started a ${callLabel}`,
+        },
+      })
+      .catch((error) => {
+        this.logger.error(
+          {
+            callId: call.id,
+            err: error instanceof Error ? error.message : 'unknown',
+          },
+          'calling.notify_callee_failed',
+        );
+      });
     this.realtime.emitToUser(callerId, 'call.ringing', payload);
     this.realtime.emitToUser(calleeId, 'call.ringing', payload);
     return {
@@ -714,6 +848,16 @@ export class CallingService implements OnModuleInit {
   }
 
   private async onConnected(call: Call): Promise<void> {
+    // transition()'s idempotent short-circuit means a losing concurrent
+    // accept() request can still reach here after observing "already
+    // CONNECTED". This Redis lock makes the hold-top-up + job scheduling
+    // below run exactly once per call regardless — first caller wins, any
+    // racing caller just returns (the work is already done or in flight).
+    const lockKey = `call:${call.id}:connected-setup-lock`;
+    const acquired = await this.redis.client.set(lockKey, '1', 'EX', 30, 'NX');
+    if (acquired !== 'OK') {
+      return;
+    }
     const fresh = await this.prisma.call.findUnique({ where: { id: call.id } });
     if (fresh && fresh.heldAmountCents < fresh.ratePerMinuteCents) {
       await this.wallet.hold(
@@ -839,6 +983,16 @@ export class CallingService implements OnModuleInit {
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
     }
+    const existingRefund = await this.prisma.auditLog.findFirst({
+      where: { action: 'call.refund', targetType: 'call', targetId: callId },
+    });
+    if (existingRefund) {
+      throw new AppError(
+        ErrorCodes.CONFLICT,
+        'Call has already been refunded',
+        HttpStatus.CONFLICT,
+      );
+    }
     const amount = call.billedAmountCents;
     const creatorShareBps = shareBpsForSettlement(
       call.creatorShareBps,
@@ -903,6 +1057,16 @@ export class CallingService implements OnModuleInit {
       return CallStatus.FAILED;
     }
     return null;
+  }
+
+  /** Read-only lookup for the realtime gateway's disconnect/reconnect signal. */
+  async findActiveCallForUser(userId: string): Promise<Call | null> {
+    return this.prisma.call.findFirst({
+      where: {
+        status: { notIn: TERMINAL_CALL_STATUSES },
+        OR: [{ callerId: userId }, { calleeId: userId }],
+      },
+    });
   }
 
   private async getParticipantCall(
@@ -1002,11 +1166,33 @@ export class CallingService implements OnModuleInit {
     const payload = await this.publicCall(next);
     this.realtime.emitToUser(next.callerId, this.eventName(to), payload);
     this.realtime.emitToUser(next.calleeId, this.eventName(to), payload);
+    // Best-effort presence side effect only. A failure here must never abort
+    // the state transition itself — callers like accept()/markRtcJoined()
+    // depend on this method returning successfully so they can proceed to
+    // onConnected(), which arms the heartbeat/extend-hold safety jobs. If
+    // this throws, we'd otherwise leave a CONNECTED call with a live wallet
+    // hold and no job watching it.
     if (to === CallStatus.CONNECTED) {
-      await this.hosts.markBusy(next.calleeId);
+      await this.hosts.markBusy(next.calleeId).catch((error) => {
+        this.logger.error(
+          {
+            callId: next.id,
+            err: error instanceof Error ? error.message : 'unknown',
+          },
+          'calling.mark_busy_failed',
+        );
+      });
     }
     if (isTerminal(to)) {
-      await this.hosts.clearBusy(next.calleeId);
+      await this.hosts.clearBusy(next.calleeId).catch((error) => {
+        this.logger.error(
+          {
+            callId: next.id,
+            err: error instanceof Error ? error.message : 'unknown',
+          },
+          'calling.clear_busy_failed',
+        );
+      });
     }
     return next;
   }
@@ -1080,17 +1266,16 @@ export class CallingService implements OnModuleInit {
    * REFUNDED — charge reversed via CALL_REFUND (still SETTLED historically; clients may check ledger)
    */
   settlementStatusFor(call: Call): 'PENDING' | 'SETTLED' | 'NOT_APPLICABLE' {
-    const terminalNonBillable = [
-      'REJECTED',
-      'CANCELLED',
-      'TIMEOUT',
-      'FAILED',
-    ] as const;
+    // FAILED after CONNECTED still bills for the actual connected duration
+    // (settle() keys off connectedAt/endedAt presence, not the specific
+    // terminal status) — it must report SETTLED, not NOT_APPLICABLE, or a
+    // charged caller/paid host would see a misleading label here.
+    if (call.status === 'ENDED' || call.status === 'FAILED') {
+      return call.connectedAt ? 'SETTLED' : 'NOT_APPLICABLE';
+    }
+    const terminalNonBillable = ['REJECTED', 'CANCELLED', 'TIMEOUT'] as const;
     if ((terminalNonBillable as readonly string[]).includes(call.status)) {
       return 'NOT_APPLICABLE';
-    }
-    if (call.status === 'ENDED') {
-      return call.connectedAt ? 'SETTLED' : 'NOT_APPLICABLE';
     }
     return 'PENDING';
   }
