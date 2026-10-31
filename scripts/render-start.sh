@@ -44,6 +44,12 @@ until timeout 40 npx prisma migrate deploy; do
   sleep 5
 done
 
+# Create the production admin account when explicitly enabled
+if [ "${SEED_ADMIN:-}" = "true" ]; then
+  echo "Creating admin account if it does not exist"
+  node dist/admin-seed/seed-admin.js
+fi
+
 if [ "${SEED_DEMO:-}" = "true" ] && [ "${NODE_ENV:-}" != "production" ]; then
   echo "Seeding demo accounts"
   node dist/seed/seed.js
