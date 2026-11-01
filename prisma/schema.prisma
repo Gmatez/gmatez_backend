@@ -126,6 +126,14 @@ enum OperatingMode {
   HOST
 }
 
+/// Host account login eligibility, mirroring UserStatus. Independent of
+/// HostStatus, which is the application/approval state.
+enum HostAccountStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
 model User {
   id           String     @id @default(uuid())
   email        String     @unique
@@ -291,6 +299,170 @@ model HostAgreementAcceptance {
 
   @@unique([userId, agreementType, version])
   @@index([userId, agreementType])
+}
+
+/// Standalone host identity, step 1 of the User/Host account split (Phase 4A).
+/// Not yet wired into any application code or FK'd from elsewhere — this
+/// table and its satellites exist in parallel with HostProfile/User and are
+/// backfilled from them, so this migration stays purely additive and safe
+/// to apply without touching any existing read/write path. A later migration
+/// (Phase 4A, part 2) repoints HostSupervision/PayoutDestination/PayoutRequest
+/// at this table once every row here is confirmed backfilled; HostProfile and
+/// the old User row for each host are removed only once Phase 4C has moved
+/// Call/Conversation/Message/Block/Report off the old User id.
+///
+/// id intentionally reuses the host's existing User.id (decision: no FK
+/// rewriting needed anywhere once the cutover happens, since every existing
+/// row that points at "this host" already holds the right UUID).
+model Host {
+  id                      String                 @id
+  phone                   String                 @unique
+  email                   String?
+  accountStatus           HostAccountStatus      @default(ACTIVE)
+  status                  HostStatus             @default(PENDING_REVIEW)
+  availability            HostAvailability       @default(OFFLINE)
+  verificationStatus      HostVerificationStatus @default(NOT_REQUIRED)
+
+  /// Discovery-facing profile, absorbed from the generic Profile model since
+  /// a host's profile is never shared with a caller-mode account once split.
+  displayName             String                 @default("")
+  bio                     String                 @default("")
+  gender                  Gender                 @default(UNSPECIFIED)
+  country                 String?
+  language                String?
+  avatarUrl               String?
+  isDiscoverable          Boolean                @default(true)
+  lastActiveAt            DateTime               @default(now())
+
+  voiceEnabled            Boolean                @default(true)
+  videoEnabled            Boolean                @default(true)
+  voiceRatePerMinuteCents Int                    @default(100)
+  videoRatePerMinuteCents Int                    @default(150)
+  languages               String[]               @default([])
+  interests               String[]               @default([])
+  applicationBio          String                 @default("")
+  /// Host-facing review / rejection message (safe to show the applicant).
+  reviewNote              String?
+  /// Internal admin moderation note — never returned on host/public APIs.
+  internalNote            String?
+  submittedAt             DateTime               @default(now())
+  reviewedAt              DateTime?
+  reviewedById            String?
+  /// Sensitive identity document metadata. The file itself is not stored in the database.
+  idProofType             String?
+  idProofLast4            String?
+  idProofMime             String?
+  idProofUpdatedAt        DateTime?
+  /// Full identity number for admin review only. Never returned on public discovery.
+  identityCardNumber      String?
+  identityFrontMime       String?
+  identityBackMime        String?
+  profileImageMime        String?
+  createdAt               DateTime               @default(now())
+  updatedAt               DateTime               @updatedAt
+
+  wallet                  HostWallet?
+  refreshTokens           HostRefreshToken[]
+  deviceTokens            HostDeviceToken[]
+  notifications           HostAppNotification[]
+  notificationPreferences HostNotificationPreference?
+
+  @@index([status, availability])
+  @@index([status, updatedAt])
+  @@index([status, verificationStatus])
+  @@index([isDiscoverable, lastActiveAt(sort: Desc)])
+  @@index([language, isDiscoverable, lastActiveAt(sort: Desc)])
+}
+
+model HostRefreshToken {
+  id        String    @id @default(uuid())
+  hostId    String
+  familyId  String
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  host Host @relation(fields: [hostId], references: [id], onDelete: Cascade)
+
+  @@index([hostId, createdAt])
+  @@index([familyId])
+}
+
+model HostDeviceToken {
+  id        String   @id @default(uuid())
+  hostId    String
+  token     String   @unique
+  platform  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  host Host @relation(fields: [hostId], references: [id], onDelete: Cascade)
+
+  @@index([hostId])
+}
+
+model HostAppNotification {
+  id        String             @id @default(uuid())
+  hostId    String
+  type      String
+  title     String
+  body      String
+  data      Json?
+  status    NotificationStatus @default(PENDING)
+  readAt    DateTime?
+  createdAt DateTime           @default(now())
+
+  host Host @relation(fields: [hostId], references: [id], onDelete: Cascade)
+
+  @@index([hostId, createdAt(sort: Desc)])
+}
+
+/// Per-host push/in-app notification preferences, mirroring NotificationPreference.
+model HostNotificationPreference {
+  hostId       String   @id
+  incomingCall Boolean  @default(true)
+  chatMessage  Boolean  @default(true)
+  payout       Boolean  @default(true)
+  system       Boolean  @default(true)
+  updatedAt    DateTime @updatedAt
+
+  host Host @relation(fields: [hostId], references: [id], onDelete: Cascade)
+}
+
+/// Host call-earnings wallet, forked out of the generic Wallet table since a
+/// host's earnings and a caller's spend are no longer the same identity.
+model HostWallet {
+  id                    String   @id @default(uuid())
+  hostId                String   @unique
+  currency              String   @default("USD")
+  availableBalanceCents Int      @default(0)
+  heldBalanceCents      Int      @default(0)
+  version               Int      @default(0)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  host   Host                    @relation(fields: [hostId], references: [id], onDelete: Restrict)
+  ledger HostWalletLedgerEntry[]
+}
+
+model HostWalletLedgerEntry {
+  id                String          @id @default(uuid())
+  walletId          String
+  type              LedgerEntryType
+  reason            LedgerReason
+  amountCents       Int
+  balanceAfterCents Int
+  idempotencyKey    String          @unique
+  referenceType     String?
+  referenceId       String?
+  metadata          Json?
+  createdAt         DateTime        @default(now())
+
+  wallet HostWallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+
+  @@index([walletId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([referenceType, referenceId])
 }
 
 model Wallet {
