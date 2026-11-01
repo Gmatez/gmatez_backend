@@ -77,8 +77,6 @@ describe('host lifecycle (e2e)', () => {
         interests: ['chat'],
         voiceEnabled: true,
         videoEnabled: true,
-        voiceRatePerMinuteCents: 150,
-        videoRatePerMinuteCents: 250,
         acceptedAgreements: agreements,
       },
     });

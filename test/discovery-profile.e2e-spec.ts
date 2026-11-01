@@ -286,7 +286,7 @@ describe('discovery and profiles (e2e)', () => {
     expect(names).not.toContain('Bob');
   });
 
-  it('accepts flat host apply rates contract', async () => {
+  it('derives host call pricing from the platform default, never from the host', async () => {
     const bob = await registerUser(app, 'bob@example.com', 'Bob');
     await app.inject({
       method: 'PATCH',
@@ -315,24 +315,26 @@ describe('discovery and profiles (e2e)', () => {
       });
       expect(upload.statusCode).toBe(201);
     }
+    const basePayload = {
+      applicationBio: 'Ready to listen carefully every day.',
+      languages: ['en'],
+      interests: ['chat'],
+      voiceEnabled: true,
+      videoEnabled: false,
+      acceptedAgreements: [
+        { agreementType: 'HOST_GUIDELINES', version: '1.0' },
+        { agreementType: 'TERMS_OF_SERVICE', version: '1.0' },
+        { agreementType: 'PRIVACY_POLICY', version: '1.0' },
+      ],
+    };
+
+    // No platform pricing configured yet in this test DB, so the schema's
+    // own default (100) is the floor, and video falls back to voice + 50.
     const apply = await app.inject({
       method: 'POST',
       url: '/api/v1/hosts/applications',
       headers: { authorization: `Bearer ${bob.accessToken}` },
-      payload: {
-        applicationBio: 'Ready to listen carefully every day.',
-        languages: ['en'],
-        interests: ['chat'],
-        voiceEnabled: true,
-        videoEnabled: false,
-        voiceRatePerMinuteCents: 200,
-        videoRatePerMinuteCents: 300,
-        acceptedAgreements: [
-          { agreementType: 'HOST_GUIDELINES', version: '1.0' },
-          { agreementType: 'TERMS_OF_SERVICE', version: '1.0' },
-          { agreementType: 'PRIVACY_POLICY', version: '1.0' },
-        ],
-      },
+      payload: basePayload,
     });
     expect(apply.statusCode).toBe(201);
     const body = JSON.parse(apply.body) as {
@@ -341,7 +343,17 @@ describe('discovery and profiles (e2e)', () => {
       videoRatePerMinuteCents: number;
     };
     expect(body.status).toBe('PENDING_REVIEW');
-    expect(body.voiceRatePerMinuteCents).toBe(200);
-    expect(body.videoRatePerMinuteCents).toBe(300);
+    expect(body.voiceRatePerMinuteCents).toBe(100);
+    expect(body.videoRatePerMinuteCents).toBe(150);
+
+    // A host trying to set their own rate is rejected outright, not
+    // silently ignored — pricing only ever comes from the admin.
+    const rejected = await app.inject({
+      method: 'POST',
+      url: '/api/v1/hosts/applications',
+      headers: { authorization: `Bearer ${bob.accessToken}` },
+      payload: { ...basePayload, voiceRatePerMinuteCents: 999 },
+    });
+    expect(rejected.statusCode).toBe(400);
   });
 });

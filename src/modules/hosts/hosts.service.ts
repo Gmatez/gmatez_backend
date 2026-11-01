@@ -28,16 +28,12 @@ export type HostApplyInput = {
   interests: string[];
   voiceEnabled?: boolean;
   videoEnabled?: boolean;
-  voiceRatePerMinuteCents?: number;
-  videoRatePerMinuteCents?: number;
   acceptedAgreements: HostAgreementAcceptanceInput[];
 };
 
 export type HostPatchInput = {
   voiceEnabled?: boolean;
   videoEnabled?: boolean;
-  voiceRatePerMinuteCents?: number;
-  videoRatePerMinuteCents?: number;
   languages?: string[];
   interests?: string[];
   applicationBio?: string;
@@ -45,6 +41,9 @@ export type HostPatchInput = {
 
 const MAX_RATE = 100_000;
 const MAX_LIST = 12;
+/** Matches HostProfile.voiceRatePerMinuteCents' own schema default — the
+ *  floor used only when no admin PlatformPricing row has been set up yet. */
+const DEFAULT_VOICE_RATE_CENTS = 100;
 
 @Injectable()
 export class HostsService {
@@ -287,14 +286,21 @@ export class HostsService {
         'Enable at least one call type',
       );
     }
-    const voiceRate = this.clampRate(
-      input.voiceRatePerMinuteCents ?? user.profile.ratePerMinuteCents,
-    );
-    const videoRate = this.clampRate(
-      input.videoRatePerMinuteCents ?? voiceRate + 50,
-    );
     const documents = await this.documents.requireApplicationDocuments(userId);
     const identityLast4 = documents.identityCardNumber.replace(/\D/g, '').slice(-4);
+
+    // Hosts never set their own call pricing — it always comes from the
+    // admin-configured platform rate (falling back to the schema's own
+    // default if no admin pricing has been set up yet).
+    const pricing = await this.prisma.platformPricing.findUnique({
+      where: { id: 'default' },
+    });
+    const voiceRate = this.clampRate(
+      pricing?.userRatePerMinuteCents ?? DEFAULT_VOICE_RATE_CENTS,
+    );
+    const videoRate = this.clampRate(
+      pricing?.userVideoRatePerMinuteCents ?? voiceRate + 50,
+    );
 
     const host = await this.prisma.$transaction(async (tx) => {
       const next = await tx.hostProfile.upsert({
@@ -397,16 +403,6 @@ export class HostsService {
     }
     if (patch.videoEnabled !== undefined) {
       data.videoEnabled = patch.videoEnabled;
-    }
-    if (patch.voiceRatePerMinuteCents !== undefined) {
-      data.voiceRatePerMinuteCents = this.clampRate(
-        patch.voiceRatePerMinuteCents,
-      );
-    }
-    if (patch.videoRatePerMinuteCents !== undefined) {
-      data.videoRatePerMinuteCents = this.clampRate(
-        patch.videoRatePerMinuteCents,
-      );
     }
     if (patch.languages) {
       data.languages = this.normalizeList(patch.languages);

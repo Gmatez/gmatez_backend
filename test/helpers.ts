@@ -143,8 +143,6 @@ export async function activateHost(input: {
   hostUserId: string;
   online?: boolean;
   languages?: string[];
-  voiceRatePerMinuteCents?: number;
-  videoRatePerMinuteCents?: number;
 }) {
   const avatar = await input.app.inject({
     method: 'PATCH',
@@ -188,8 +186,6 @@ export async function activateHost(input: {
       interests: ['support'],
       voiceEnabled: true,
       videoEnabled: true,
-      voiceRatePerMinuteCents: input.voiceRatePerMinuteCents ?? 150,
-      videoRatePerMinuteCents: input.videoRatePerMinuteCents ?? 250,
       acceptedAgreements: [
         { agreementType: 'HOST_GUIDELINES', version: '1.0' },
         { agreementType: 'TERMS_OF_SERVICE', version: '1.0' },

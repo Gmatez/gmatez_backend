@@ -13,12 +13,9 @@ import {
   IsArray,
   IsBoolean,
   IsIn,
-  IsInt,
   IsOptional,
   IsString,
-  Max,
   MaxLength,
-  Min,
   MinLength,
   ValidateNested,
 } from 'class-validator';
@@ -101,20 +98,6 @@ export class HostApplyDto {
   @IsBoolean()
   videoEnabled?: boolean;
 
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  @Max(100000)
-  voiceRatePerMinuteCents?: number;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  @Max(100000)
-  videoRatePerMinuteCents?: number;
-
   @ApiProperty({ type: [HostAgreementAcceptanceDto] })
   @IsArray()
   @ArrayMinSize(3)
@@ -133,20 +116,6 @@ export class HostPatchDto {
   @IsOptional()
   @IsBoolean()
   videoEnabled?: boolean;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  @Max(100000)
-  voiceRatePerMinuteCents?: number;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  @Max(100000)
-  videoRatePerMinuteCents?: number;
 
   @ApiPropertyOptional({ type: [String] })
   @IsOptional()
