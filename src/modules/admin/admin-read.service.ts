@@ -779,6 +779,59 @@ export class AdminReadService {
     return { items, total, page: page.page, pageSize: page.pageSize };
   }
 
+  /**
+   * Calls currently CONNECTED, for the admin panel's live dashboard — no
+   * pagination (the count at any instant is small), polled on a short
+   * interval client-side rather than pushed over a websocket (see Phase 3
+   * of the plan for why: no admin realtime channel/client exists today).
+   */
+  async listActiveCalls() {
+    const rows = await this.prisma.call.findMany({
+      where: { status: 'CONNECTED' },
+      orderBy: { connectedAt: 'asc' },
+      include: {
+        caller: {
+          select: {
+            id: true,
+            profile: { select: { displayName: true } },
+          },
+        },
+        callee: {
+          select: {
+            id: true,
+            profile: { select: { displayName: true } },
+          },
+        },
+      },
+    });
+    const balances = await this.prisma.wallet.findMany({
+      where: {
+        userId: { in: rows.flatMap((row) => [row.callerId, row.calleeId]) },
+      },
+      select: { userId: true, availableBalanceCents: true },
+    });
+    const balanceByUserId = new Map(
+      balances.map((wallet) => [wallet.userId, wallet.availableBalanceCents]),
+    );
+    return rows.map((call) => ({
+      id: call.id,
+      callType: call.callType,
+      connectedAt: call.connectedAt,
+      ratePerMinuteCents: call.ratePerMinuteCents,
+      billedSeconds: call.billedSeconds,
+      caller: {
+        id: call.callerId,
+        displayName: call.caller.profile?.displayName ?? null,
+        availableBalanceCents: balanceByUserId.get(call.callerId) ?? 0,
+      },
+      host: {
+        id: call.calleeId,
+        displayName: call.callee.profile?.displayName ?? null,
+        availableBalanceCents: balanceByUserId.get(call.calleeId) ?? 0,
+      },
+    }));
+  }
+
   async getCall(callId: string) {
     const call = await this.prisma.call.findUnique({
       where: { id: callId },

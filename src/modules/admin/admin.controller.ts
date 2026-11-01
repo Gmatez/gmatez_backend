@@ -408,6 +408,11 @@ export class AdminController {
 
   // --- Staff roles (dynamic RBAC) ---------------------------------------
 
+  @Get('staff')
+  listStaffMembers() {
+    return this.admin.listStaffMembers();
+  }
+
   @RequirePermission('staff.manage')
   @Get('staff-roles')
   listStaffRoles() {
@@ -584,6 +589,11 @@ export class AdminController {
       return this.read.listCalls(query);
     }
     return this.admin.listCalls();
+  }
+
+  @Get('calls/active')
+  activeCalls() {
+    return this.read.listActiveCalls();
   }
 
   @Get('calls/:id')

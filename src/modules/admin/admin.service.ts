@@ -71,6 +71,7 @@ export class AdminService {
         phone: true,
         role: true,
         status: true,
+        staffRoleId: true,
         createdAt: true,
         profile: true,
         hostProfile: true,
@@ -586,6 +587,20 @@ export class AdminService {
   }
 
   // --- Staff roles (dynamic RBAC) ---------------------------------------
+
+  /** Lightweight list for pickers (assign a staff role, assign a host
+   *  supervisor) — not the full paginated user list. */
+  listStaffMembers() {
+    return this.prisma.user.findMany({
+      where: { role: 'ADMIN' },
+      orderBy: { email: 'asc' },
+      select: {
+        id: true,
+        email: true,
+        staffRole: { select: { id: true, name: true } },
+      },
+    });
+  }
 
   listStaffRoles() {
     return this.prisma.staffRole.findMany({
