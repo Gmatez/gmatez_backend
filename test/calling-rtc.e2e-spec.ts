@@ -164,4 +164,32 @@ describe('calling rtc token (e2e)', () => {
     });
     expect(charges).toBeLessThanOrEqual(1);
   });
+
+  it('caller-summary is callee-only and reflects a first-time caller', async () => {
+    const { alice, bob, callId } = await fundAndOpenCall();
+
+    const asCaller = await app.inject({
+      method: 'GET',
+      url: `/api/v1/calls/${callId}/caller-summary`,
+      headers: { authorization: `Bearer ${alice.accessToken}` },
+    });
+    expect(asCaller.statusCode).toBe(403);
+
+    const asCallee = await app.inject({
+      method: 'GET',
+      url: `/api/v1/calls/${callId}/caller-summary`,
+      headers: { authorization: `Bearer ${bob.accessToken}` },
+    });
+    expect(asCallee.statusCode).toBe(200);
+    const summary = JSON.parse(asCallee.body) as {
+      registeredAt: string;
+      isNewCaller: boolean;
+      lifetimeSpentCents: number;
+      currentBalanceCents: number;
+    };
+    expect(summary.isNewCaller).toBe(true);
+    expect(summary.lifetimeSpentCents).toBe(0);
+    expect(summary.currentBalanceCents).toBeGreaterThan(0);
+    expect(new Date(summary.registeredAt).getTime()).not.toBeNaN();
+  });
 });

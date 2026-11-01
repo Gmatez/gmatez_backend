@@ -110,6 +110,15 @@ export class CallingController {
   }
 
   @ApiBearerAuth()
+  @Get(':id/caller-summary')
+  callerSummary(
+    @CurrentUser() user: { userId: string },
+    @Param('id') id: string,
+  ) {
+    return this.calling.getCallerSummary(id, user.userId);
+  }
+
+  @ApiBearerAuth()
   @Post(':id/accept')
   accept(@CurrentUser() user: { userId: string }, @Param('id') id: string) {
     return this.calling.accept(id, user.userId);

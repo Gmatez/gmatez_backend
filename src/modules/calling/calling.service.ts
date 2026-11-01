@@ -661,6 +661,68 @@ export class CallingService implements OnModuleInit {
     );
   }
 
+  /**
+   * Caller context for the host answering this call — who they're ringing,
+   * not what the caller has done on other calls. Callee-only: the caller
+   * never sees their own spend/balance surfaced back to them this way.
+   */
+  async getCallerSummary(callId: string, hostUserId: string) {
+    const call = await this.prisma.call.findUnique({ where: { id: callId } });
+    if (!call) {
+      throw new AppError(
+        ErrorCodes.NOT_FOUND,
+        'Call not found',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    if (call.calleeId !== hostUserId) {
+      throw new AppError(
+        ErrorCodes.CALL_NOT_PARTICIPANT,
+        'Only the callee can view caller details for this call',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+    const callerId = call.callerId;
+    const [caller, priorCompletedCalls, spend, wallet] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: callerId },
+        select: { createdAt: true },
+      }),
+      this.prisma.call.count({
+        where: {
+          callerId,
+          status: CallStatus.ENDED,
+          createdAt: { lt: call.createdAt },
+        },
+      }),
+      this.prisma.walletLedgerEntry.aggregate({
+        where: {
+          wallet: { userId: callerId },
+          type: 'DEBIT',
+          reason: 'CALL_CHARGE',
+        },
+        _sum: { amountCents: true },
+      }),
+      this.prisma.wallet.findUnique({
+        where: { userId: callerId },
+        select: { availableBalanceCents: true },
+      }),
+    ]);
+    if (!caller) {
+      throw new AppError(
+        ErrorCodes.NOT_FOUND,
+        'Caller not found',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    return {
+      registeredAt: caller.createdAt,
+      isNewCaller: priorCompletedCalls === 0,
+      lifetimeSpentCents: spend._sum.amountCents ?? 0,
+      currentBalanceCents: wallet?.availableBalanceCents ?? 0,
+    };
+  }
+
   async listHistory(
     userId: string,
     limit: number,
