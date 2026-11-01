@@ -596,10 +596,48 @@ export class HostsService {
         HttpStatus.NOT_FOUND,
       );
     }
-    const completeness = await this.completeness.evaluate(userId);
+    const [completeness, wallet, recentCalls, recentPayouts] =
+      await Promise.all([
+        this.completeness.evaluate(userId),
+        this.prisma.wallet.findUnique({
+          where: { userId },
+          select: {
+            currency: true,
+            availableBalanceCents: true,
+            heldBalanceCents: true,
+          },
+        }),
+        this.prisma.call.findMany({
+          where: { calleeId: userId },
+          orderBy: { createdAt: 'desc' },
+          take: 10,
+          select: {
+            id: true,
+            status: true,
+            callType: true,
+            billedAmountCents: true,
+            creatorShareBps: true,
+            createdAt: true,
+          },
+        }),
+        this.prisma.payoutRequest.findMany({
+          where: { userId },
+          orderBy: { createdAt: 'desc' },
+          take: 10,
+          select: {
+            id: true,
+            status: true,
+            amountCents: true,
+            createdAt: true,
+          },
+        }),
+      ]);
     return {
       ...host,
       completeness,
+      wallet,
+      recentCalls,
+      recentPayouts,
     };
   }
 
