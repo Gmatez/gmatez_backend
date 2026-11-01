@@ -108,7 +108,7 @@ export class AdminService {
         take: 50,
       }),
       this.prisma.payoutRequest.findMany({
-        where: { userId },
+        where: { hostId: userId },
         orderBy: { createdAt: 'desc' },
         take: 50,
       }),

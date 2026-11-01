@@ -496,13 +496,13 @@ export class AdminReadService {
         }),
         uuid
           ? this.prisma.payoutRequest.findMany({
-              where: { OR: [{ id: uuid }, { userId: uuid }] },
+              where: { OR: [{ id: uuid }, { hostId: uuid }] },
               take: 8,
               select: {
                 id: true,
                 status: true,
                 amountCents: true,
-                userId: true,
+                hostId: true,
                 createdAt: true,
               },
             })
@@ -523,7 +523,16 @@ export class AdminReadService {
           : Promise.resolve([]),
       ],
     );
-    return { users, hosts, calls, payments, payouts, reports };
+    return {
+      users,
+      hosts,
+      calls,
+      payments,
+      // Admin panel still calls this field userId — kept stable here
+      // pending Phase 4D's admin panel update to Host-native fields.
+      payouts: payouts.map(({ hostId, ...rest }) => ({ ...rest, userId: hostId })),
+      reports,
+    };
   }
 
   async listUsers(
@@ -998,17 +1007,13 @@ export class AdminReadService {
       ...(createdAt ? { createdAt } : {}),
       ...(q
         ? isUuid(q)
-          ? { OR: [{ id: q }, { userId: q }] }
+          ? { OR: [{ id: q }, { hostId: q }] }
           : {
-              user: {
+              host: {
                 OR: [
                   { email: { contains: q, mode: 'insensitive' } },
                   { phone: { contains: q, mode: 'insensitive' } },
-                  {
-                    profile: {
-                      displayName: { contains: q, mode: 'insensitive' },
-                    },
-                  },
+                  { displayName: { contains: q, mode: 'insensitive' } },
                 ],
               },
             }
@@ -1022,11 +1027,11 @@ export class AdminReadService {
         skip: page.skip,
         take: page.take,
         include: {
-          user: {
+          host: {
             select: {
               id: true,
               phone: true,
-              profile: { select: { displayName: true } },
+              displayName: true,
             },
           },
           destination: true,
@@ -1045,14 +1050,15 @@ export class AdminReadService {
     const payout = await this.prisma.payoutRequest.findUnique({
       where: { id },
       include: {
-        user: {
+        host: {
           select: {
             id: true,
             email: true,
             phone: true,
+            accountStatus: true,
             status: true,
-            profile: { select: { displayName: true } },
-            hostProfile: { select: { status: true, availability: true } },
+            availability: true,
+            displayName: true,
           },
         },
         destination: true,
@@ -1072,7 +1078,15 @@ export class AdminReadService {
     });
     return {
       ...this.presentPayout(payout),
-      user: payout.user,
+      // Admin panel still expects a `user` shape with a nested profile —
+      // kept stable here pending Phase 4D's admin panel update.
+      user: payout.host && {
+        id: payout.host.id,
+        email: payout.host.email,
+        phone: payout.host.phone,
+        status: payout.host.accountStatus,
+        profile: { displayName: payout.host.displayName },
+      },
       audit,
       rules: this.payouts.rules(),
     };
@@ -1562,7 +1576,7 @@ export class AdminReadService {
 
   private presentPayout(payout: {
     id: string;
-    userId: string;
+    hostId: string;
     destinationId: string | null;
     amountCents: number;
     status: PayoutStatus;
@@ -1577,23 +1591,25 @@ export class AdminReadService {
       detailsJson: Prisma.JsonValue;
       isDefault: boolean;
     } | null;
-    user?: {
+    host?: {
       id: string;
       phone: string | null;
-      profile: { displayName: string } | null;
+      displayName: string;
     };
   }) {
     return {
       id: payout.id,
-      userId: payout.userId,
+      // Admin panel still calls this field userId — kept stable here
+      // pending Phase 4D's admin panel update to Host-native fields.
+      userId: payout.hostId,
       amountCents: payout.amountCents,
       status: payout.status,
       failureReason: payout.failureReason,
       createdAt: payout.createdAt,
       updatedAt: payout.updatedAt,
       processedAt: payout.processedAt,
-      hostName: payout.user?.profile?.displayName ?? null,
-      hostPhone: payout.user?.phone ?? null,
+      hostName: payout.host?.displayName ?? null,
+      hostPhone: payout.host?.phone ?? null,
       destination: payout.destination
         ? {
             id: payout.destination.id,

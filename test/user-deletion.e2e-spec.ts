@@ -85,7 +85,7 @@ describe('user self-deletion / GDPR erasure (e2e)', () => {
     });
     await prisma.payoutDestination.create({
       data: {
-        userId: bobUser.id,
+        hostId: bobUser.id,
         type: 'BANK',
         label: "Bob's savings",
         detailsJson: { accountLast4: '4321' },
@@ -108,7 +108,7 @@ describe('user self-deletion / GDPR erasure (e2e)', () => {
     expect(host.languages).toEqual([]);
 
     const destination = await prisma.payoutDestination.findFirstOrThrow({
-      where: { userId: bobUser.id },
+      where: { hostId: bobUser.id },
     });
     expect(destination.label).toBe('');
     expect(destination.detailsJson).toEqual({});

@@ -42,7 +42,7 @@ export class PayoutsService {
       where: { idempotencyKey },
     });
     if (existing) {
-      if (existing.userId !== userId) {
+      if (existing.hostId !== userId) {
         throw new AppError(
           ErrorCodes.CONFLICT,
           'Idempotency key already used',
@@ -52,7 +52,7 @@ export class PayoutsService {
       return existing;
     }
     const destination = await this.prisma.payoutDestination.findFirst({
-      where: { userId, isDefault: true },
+      where: { hostId: userId, isDefault: true },
       orderBy: { updatedAt: 'desc' },
     });
     if (!destination) {
@@ -63,7 +63,7 @@ export class PayoutsService {
       );
     }
     const pending = await this.prisma.payoutRequest.findFirst({
-      where: { userId, status: { in: ['REQUESTED', 'PROCESSING'] } },
+      where: { hostId: userId, status: { in: ['REQUESTED', 'PROCESSING'] } },
     });
     if (pending) {
       throw new AppError(
@@ -77,7 +77,7 @@ export class PayoutsService {
       return await this.prisma.$transaction(async (tx) => {
         await tx.$queryRaw`SELECT id FROM "Wallet" WHERE "userId" = ${userId} FOR UPDATE`;
         const pendingInTx = await tx.payoutRequest.findFirst({
-          where: { userId, status: { in: ['REQUESTED', 'PROCESSING'] } },
+          where: { hostId: userId, status: { in: ['REQUESTED', 'PROCESSING'] } },
         });
         if (pendingInTx) {
           // Two concurrent requests sharing an idempotencyKey both pass the
@@ -109,7 +109,7 @@ export class PayoutsService {
         );
         return tx.payoutRequest.create({
           data: {
-            userId,
+            hostId: userId,
             destinationId: destination.id,
             amountCents,
             idempotencyKey,
@@ -125,7 +125,7 @@ export class PayoutsService {
         const raced = await this.prisma.payoutRequest.findUnique({
           where: { idempotencyKey },
         });
-        if (raced && raced.userId === userId) {
+        if (raced && raced.hostId === userId) {
           return raced;
         }
       }
@@ -150,12 +150,12 @@ export class PayoutsService {
       );
     }
     await this.prisma.payoutDestination.updateMany({
-      where: { userId },
+      where: { hostId: userId },
       data: { isDefault: false },
     });
     return this.prisma.payoutDestination.create({
       data: {
-        userId,
+        hostId: userId,
         type,
         label: input.label?.slice(0, 80) ?? '',
         detailsJson: input.details as Prisma.InputJsonValue,
@@ -166,7 +166,7 @@ export class PayoutsService {
 
   listDestinations(userId: string) {
     return this.prisma.payoutDestination.findMany({
-      where: { userId },
+      where: { hostId: userId },
       orderBy: [{ isDefault: 'desc' }, { updatedAt: 'desc' }],
       take: 20,
     });
@@ -174,7 +174,7 @@ export class PayoutsService {
 
   list(userId: string) {
     return this.prisma.payoutRequest.findMany({
-      where: { userId },
+      where: { hostId: userId },
       orderBy: { createdAt: 'desc' },
       take: 50,
     });
@@ -228,7 +228,7 @@ export class PayoutsService {
     }
     if (status === 'REJECTED' || status === 'FAILED') {
       await this.wallet.applyLedger({
-        userId: payout.userId,
+        userId: payout.hostId,
         type: 'CREDIT',
         reason: 'ADMIN_ADJUSTMENT',
         amountCents: payout.amountCents,
@@ -261,7 +261,7 @@ export class PayoutsService {
         ...(providerTransferId ? { metadata: { providerTransferId } } : {}),
       },
     });
-    await this.notifyStatus(payout.userId, payoutId, status).catch(() => {
+    await this.notifyStatus(payout.hostId, payoutId, status).catch(() => {
       // A notification failure must never fail the status update itself —
       // the wallet ledger/audit log above already committed.
     });

@@ -50,6 +50,63 @@ const MAX_LIST = 12;
 export class HostsService {
   private readonly logger = new Logger(HostsService.name);
 
+  /**
+   * Keeps the standalone Host table (Phase 4A of the account split) in sync
+   * with HostProfile/User/Profile at the two points that actually change a
+   * host's eligibility — applying and admin status changes — so Host rows
+   * exist for PayoutDestination/PayoutRequest's FKs without a one-time
+   * backfill going stale. Removed once Phase 4C/4D finish the full cutover
+   * off HostProfile.
+   */
+  private async syncHostTable(tx: Prisma.TransactionClient, userId: string) {
+    const [hostProfile, user, profile] = await Promise.all([
+      tx.hostProfile.findUniqueOrThrow({ where: { userId } }),
+      tx.user.findUniqueOrThrow({ where: { id: userId } }),
+      tx.profile.findUnique({ where: { userId } }),
+    ]);
+    const data = {
+      phone: user.phone ?? `unknown-${userId}`,
+      email: user.email.endsWith('@phone.gmatez.invalid') ? null : user.email,
+      accountStatus: user.status,
+      status: hostProfile.status,
+      availability: hostProfile.availability,
+      verificationStatus: hostProfile.verificationStatus,
+      displayName: profile?.displayName ?? '',
+      bio: profile?.bio ?? '',
+      gender: profile?.gender ?? 'UNSPECIFIED',
+      country: profile?.country ?? null,
+      language: profile?.language ?? null,
+      avatarUrl: profile?.avatarUrl ?? null,
+      isDiscoverable: profile?.isDiscoverable ?? true,
+      lastActiveAt: profile?.lastActiveAt ?? new Date(),
+      voiceEnabled: hostProfile.voiceEnabled,
+      videoEnabled: hostProfile.videoEnabled,
+      voiceRatePerMinuteCents: hostProfile.voiceRatePerMinuteCents,
+      videoRatePerMinuteCents: hostProfile.videoRatePerMinuteCents,
+      languages: hostProfile.languages,
+      interests: hostProfile.interests,
+      applicationBio: hostProfile.applicationBio,
+      reviewNote: hostProfile.reviewNote,
+      internalNote: hostProfile.internalNote,
+      submittedAt: hostProfile.submittedAt,
+      reviewedAt: hostProfile.reviewedAt,
+      reviewedById: hostProfile.reviewedById,
+      idProofType: hostProfile.idProofType,
+      idProofLast4: hostProfile.idProofLast4,
+      idProofMime: hostProfile.idProofMime,
+      idProofUpdatedAt: hostProfile.idProofUpdatedAt,
+      identityCardNumber: hostProfile.identityCardNumber,
+      identityFrontMime: hostProfile.identityFrontMime,
+      identityBackMime: hostProfile.identityBackMime,
+      profileImageMime: hostProfile.profileImageMime,
+    };
+    await tx.host.upsert({
+      where: { id: userId },
+      create: { id: userId, ...data },
+      update: data,
+    });
+  }
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly realtime: RealtimeEmitter,
@@ -147,7 +204,7 @@ export class HostsService {
         _sum: { amountCents: true },
       }),
       this.prisma.payoutRequest.aggregate({
-        where: { userId, status: { in: ['REQUESTED', 'PROCESSING'] } },
+        where: { hostId: userId, status: { in: ['REQUESTED', 'PROCESSING'] } },
         _sum: { amountCents: true },
       }),
     ]);
@@ -312,6 +369,7 @@ export class HostsService {
           update: { acceptedAt: new Date() },
         });
       }
+      await this.syncHostTable(tx, userId);
       return next;
     });
 
@@ -621,7 +679,7 @@ export class HostsService {
           },
         }),
         this.prisma.payoutRequest.findMany({
-          where: { userId },
+          where: { hostId: userId },
           orderBy: { createdAt: 'desc' },
           take: 10,
           select: {
@@ -717,6 +775,7 @@ export class HostsService {
           },
         },
       });
+      await this.syncHostTable(tx, userId);
       return next;
     });
     const title =

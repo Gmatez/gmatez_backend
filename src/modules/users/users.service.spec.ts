@@ -59,7 +59,7 @@ describe('UsersService.deleteMe', () => {
       where: { userId: 'user-1' },
     });
     expect(prisma.payoutDestination.updateMany).toHaveBeenCalledWith({
-      where: { userId: 'user-1' },
+      where: { hostId: 'user-1' },
       data: { label: '', detailsJson: {} },
     });
 

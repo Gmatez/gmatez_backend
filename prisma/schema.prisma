@@ -150,7 +150,6 @@ model User {
 
   staffRole       StaffRole?          @relation(fields: [staffRoleId], references: [id], onDelete: SetNull)
   supervisedHosts HostSupervision[]   @relation("Supervisor")
-  supervision     HostSupervision?    @relation("SupervisedHost")
   profile         Profile?
   wallet          Wallet?
   refreshTokens   RefreshToken[]
@@ -168,8 +167,6 @@ model User {
   conversationsA  Conversation[]     @relation("ConversationA")
   conversationsB  Conversation[]     @relation("ConversationB")
   messagesSent    Message[]
-  payoutRequests  PayoutRequest[]
-  payoutDestinations PayoutDestination[]
   hostProfile     HostProfile?
   notificationPreferences NotificationPreference?
 
@@ -200,9 +197,8 @@ model HostSupervision {
   staffUserId String
   assignedAt  DateTime @default(now())
 
-  host     HostProfile @relation(fields: [hostUserId], references: [userId], onDelete: Cascade, map: "HostSupervision_host_fkey")
-  staff    User        @relation("Supervisor", fields: [staffUserId], references: [id], onDelete: Cascade)
-  hostUser User        @relation("SupervisedHost", fields: [hostUserId], references: [id], onDelete: Cascade, map: "HostSupervision_hostUser_fkey")
+  host  Host @relation(fields: [hostUserId], references: [id], onDelete: Cascade)
+  staff User @relation("Supervisor", fields: [staffUserId], references: [id], onDelete: Cascade)
 
   @@index([staffUserId])
 }
@@ -280,7 +276,6 @@ model HostProfile {
 
   user                 User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
   agreementAcceptances HostAgreementAcceptance[]
-  supervision          HostSupervision?
 
   @@index([status, availability])
   @@index([status, updatedAt])
@@ -302,14 +297,12 @@ model HostAgreementAcceptance {
 }
 
 /// Standalone host identity, step 1 of the User/Host account split (Phase 4A).
-/// Not yet wired into any application code or FK'd from elsewhere — this
-/// table and its satellites exist in parallel with HostProfile/User and are
-/// backfilled from them, so this migration stays purely additive and safe
-/// to apply without touching any existing read/write path. A later migration
-/// (Phase 4A, part 2) repoints HostSupervision/PayoutDestination/PayoutRequest
-/// at this table once every row here is confirmed backfilled; HostProfile and
-/// the old User row for each host are removed only once Phase 4C has moved
-/// Call/Conversation/Message/Block/Report off the old User id.
+/// HostSupervision, PayoutDestination, and PayoutRequest already point here
+/// instead of User/HostProfile (Phase 4A, part 2) — everything else
+/// (Call/Conversation/Message/Block/Report, and the application code that
+/// reads HostProfile/User for a host) still runs on the old tables.
+/// HostProfile and the old User row for each host are removed only once
+/// Phase 4C has moved those off the old User id.
 ///
 /// id intentionally reuses the host's existing User.id (decision: no FK
 /// rewriting needed anywhere once the cutover happens, since every existing
@@ -366,6 +359,9 @@ model Host {
   deviceTokens            HostDeviceToken[]
   notifications           HostAppNotification[]
   notificationPreferences HostNotificationPreference?
+  supervision             HostSupervision?
+  payoutRequests          PayoutRequest[]
+  payoutDestinations      PayoutDestination[]
 
   @@index([status, availability])
   @@index([status, updatedAt])
@@ -720,7 +716,7 @@ model Message {
 
 model PayoutDestination {
   id          String   @id @default(uuid())
-  userId      String
+  hostId      String
   /// BANK | UPI | PAYPAL | OTHER — BUSINESS_RULE_REQUIRED for provider rails
   type        String
   label       String   @default("")
@@ -730,15 +726,15 @@ model PayoutDestination {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  host    Host            @relation(fields: [hostId], references: [id], onDelete: Cascade)
   payouts PayoutRequest[]
 
-  @@index([userId, isDefault])
+  @@index([hostId, isDefault])
 }
 
 model PayoutRequest {
   id             String       @id @default(uuid())
-  userId         String
+  hostId         String
   destinationId  String?
   amountCents    Int
   status         PayoutStatus @default(REQUESTED)
@@ -751,10 +747,10 @@ model PayoutRequest {
   updatedAt      DateTime     @updatedAt
   processedAt    DateTime?
 
-  user        User               @relation(fields: [userId], references: [id], onDelete: Restrict)
+  host        Host               @relation(fields: [hostId], references: [id], onDelete: Restrict)
   destination PayoutDestination? @relation(fields: [destinationId], references: [id], onDelete: Restrict)
 
-  @@index([userId, createdAt(sort: Desc)])
+  @@index([hostId, createdAt(sort: Desc)])
   @@index([status, createdAt])
 }
 

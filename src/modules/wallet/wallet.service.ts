@@ -380,7 +380,7 @@ export class WalletService {
     const paidOut =
       grouped.find((row) => row.reason === 'PAYOUT')?._sum.amountCents ?? 0;
     const pending = await this.prisma.payoutRequest.aggregate({
-      where: { userId, status: { in: ['REQUESTED', 'PROCESSING'] } },
+      where: { hostId: userId, status: { in: ['REQUESTED', 'PROCESSING'] } },
       _sum: { amountCents: true },
     });
     return {

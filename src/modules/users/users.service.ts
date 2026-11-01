@@ -180,7 +180,7 @@ export class UsersService {
       }),
       this.prisma.deviceToken.deleteMany({ where: { userId } }),
       this.prisma.payoutDestination.updateMany({
-        where: { userId },
+        where: { hostId: userId },
         data: { label: '', detailsJson: {} },
       }),
       this.prisma.hostProfile.updateMany({

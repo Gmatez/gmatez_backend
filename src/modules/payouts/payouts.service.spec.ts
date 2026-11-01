@@ -21,7 +21,7 @@ describe('PayoutsService eligibility', () => {
         findUnique: jest.fn().mockResolvedValue({
           id: 'p1',
           status: 'REQUESTED',
-          userId: 'host-1',
+          hostId: 'host-1',
           amountCents: 500,
         }),
       },
@@ -43,7 +43,7 @@ describe('PayoutsService eligibility', () => {
         findUnique: jest.fn().mockResolvedValue({
           id: 'p1',
           status: 'REQUESTED',
-          userId: 'host-1',
+          hostId: 'host-1',
           amountCents: 500,
         }),
         update: jest.fn().mockResolvedValue({ id: 'p1', status: 'COMPLETED' }),
