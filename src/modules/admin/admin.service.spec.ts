@@ -10,10 +10,26 @@ function harness() {
     user: {
       findUnique: jest.fn(),
       findMany: jest.fn(),
+      update: jest.fn(),
     },
     platformPricing: {
       findUnique: jest.fn(),
       upsert: jest.fn(),
+    },
+    staffRole: {
+      findUnique: jest.fn(),
+      findMany: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
+      delete: jest.fn(),
+    },
+    hostProfile: {
+      findUnique: jest.fn(),
+    },
+    hostSupervision: {
+      findUnique: jest.fn(),
+      upsert: jest.fn(),
+      delete: jest.fn(),
     },
   };
   const wallet = {
@@ -225,5 +241,96 @@ describe('admin pricing update', () => {
       },
     );
     expect(prisma.platformPricing.upsert).not.toHaveBeenCalled();
+  });
+});
+
+describe('staff roles and host supervision', () => {
+  it('creates a role and writes an audit row', async () => {
+    const { service, prisma } = harness();
+    prisma.staffRole.findUnique.mockResolvedValue(null);
+    prisma.staffRole.create.mockResolvedValue({
+      id: 'role-1',
+      name: 'Coordinator',
+      permissions: ['hosts.manage'],
+    });
+    const result = await service.createStaffRole('admin-1', {
+      name: 'Coordinator',
+      permissions: ['hosts.manage'],
+    });
+    expect(result.id).toBe('role-1');
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ action: 'staff_role.create' }),
+      }),
+    );
+  });
+
+  it('rejects a duplicate role name', async () => {
+    const { service, prisma } = harness();
+    prisma.staffRole.findUnique.mockResolvedValue({ id: 'existing' });
+    await expect(
+      service.createStaffRole('admin-1', {
+        name: 'Coordinator',
+        permissions: [],
+      }),
+    ).rejects.toMatchObject({ code: ErrorCodes.CONFLICT });
+    expect(prisma.staffRole.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses to assign a staff role to a non-ADMIN account', async () => {
+    const { service, prisma } = harness();
+    prisma.user.findUnique.mockResolvedValue({ id: 'user-1', role: 'USER' });
+    await expect(
+      service.setUserStaffRole('admin-1', 'user-1', 'role-1'),
+    ).rejects.toMatchObject({ code: ErrorCodes.VALIDATION_FAILED });
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('assigns a staff role to an ADMIN account', async () => {
+    const { service, prisma } = harness();
+    prisma.user.findUnique.mockResolvedValue({ id: 'admin-2', role: 'ADMIN' });
+    prisma.staffRole.findUnique.mockResolvedValue({ id: 'role-1' });
+    prisma.user.update.mockResolvedValue({
+      id: 'admin-2',
+      email: 'a@example.com',
+      staffRoleId: 'role-1',
+    });
+    const result = await service.setUserStaffRole(
+      'admin-1',
+      'admin-2',
+      'role-1',
+    );
+    expect(result.staffRoleId).toBe('role-1');
+  });
+
+  it('refuses to assign a non-admin as a host supervisor', async () => {
+    const { service, prisma } = harness();
+    prisma.hostProfile.findUnique.mockResolvedValue({ userId: 'host-1' });
+    prisma.user.findUnique.mockResolvedValue({ id: 'staff-1', role: 'USER' });
+    await expect(
+      service.assignHostSupervisor('admin-1', 'host-1', 'staff-1'),
+    ).rejects.toMatchObject({ code: ErrorCodes.VALIDATION_FAILED });
+    expect(prisma.hostSupervision.upsert).not.toHaveBeenCalled();
+  });
+
+  it('assigns a host supervisor and writes an audit row', async () => {
+    const { service, prisma } = harness();
+    prisma.hostProfile.findUnique.mockResolvedValue({ userId: 'host-1' });
+    prisma.user.findUnique.mockResolvedValue({ id: 'staff-1', role: 'ADMIN' });
+    prisma.hostSupervision.upsert.mockResolvedValue({
+      hostUserId: 'host-1',
+      staffUserId: 'staff-1',
+    });
+    const result = await service.assignHostSupervisor(
+      'admin-1',
+      'host-1',
+      'staff-1',
+    );
+    expect(result.staffUserId).toBe('staff-1');
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ action: 'host.supervisor.assign' }),
+      }),
+    );
   });
 });

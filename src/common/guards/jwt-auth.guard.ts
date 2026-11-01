@@ -59,7 +59,13 @@ export class JwtAuthGuard implements CanActivate {
 
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
-      select: { id: true, role: true, status: true },
+      select: {
+        id: true,
+        role: true,
+        status: true,
+        staffRoleId: true,
+        staffRole: { select: { permissions: true } },
+      },
     });
     if (!user || user.status === 'DELETED') {
       throw new AppError(
@@ -76,7 +82,12 @@ export class JwtAuthGuard implements CanActivate {
       );
     }
 
-    const auth: AuthenticatedUser = { userId: user.id, role: user.role };
+    const auth: AuthenticatedUser = {
+      userId: user.id,
+      role: user.role,
+      staffRoleId: user.staffRoleId,
+      permissions: user.staffRole?.permissions ?? [],
+    };
     request.user = auth;
     const store = getRequestContext();
     if (store) {

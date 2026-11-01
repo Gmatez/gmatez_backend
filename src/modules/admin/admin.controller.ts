@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Header,
   Param,
@@ -36,10 +37,53 @@ import {
 import { AppError, ErrorCodes } from '../../common/errors/app-error';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/public.decorator';
+import { RequirePermission } from '../../common/decorators/require-permission.decorator';
 import { HostDocumentsService } from '../hosts/host-documents.service';
 import { AdminReadService } from './admin-read.service';
 import { AdminService } from './admin.service';
 import { PaymentsService } from '../payments/payments.service';
+import { PERMISSIONS, Permission } from '../../common/permissions';
+
+export class CreateStaffRoleDto {
+  @ApiProperty()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(80)
+  name!: string;
+
+  @ApiProperty({ enum: PERMISSIONS, isArray: true })
+  @IsArray()
+  @IsIn(PERMISSIONS, { each: true })
+  permissions!: Permission[];
+}
+
+export class UpdateStaffRoleDto {
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(80)
+  name?: string;
+
+  @ApiProperty({ required: false, enum: PERMISSIONS, isArray: true })
+  @IsOptional()
+  @IsArray()
+  @IsIn(PERMISSIONS, { each: true })
+  permissions?: Permission[];
+}
+
+export class SetUserStaffRoleDto {
+  @ApiProperty({ required: false, nullable: true })
+  @IsOptional()
+  @IsUUID()
+  staffRoleId?: string | null;
+}
+
+export class AssignHostSupervisorDto {
+  @ApiProperty()
+  @IsUUID()
+  staffUserId!: string;
+}
 
 export class SetUserStatusDto {
   @ApiProperty({ enum: UserStatus })
@@ -360,6 +404,79 @@ export class AdminController {
       query.status as UserStatus | undefined,
       query.q,
     );
+  }
+
+  // --- Staff roles (dynamic RBAC) ---------------------------------------
+
+  @RequirePermission('staff.manage')
+  @Get('staff-roles')
+  listStaffRoles() {
+    return this.admin.listStaffRoles();
+  }
+
+  @RequirePermission('staff.manage')
+  @Post('staff-roles')
+  createStaffRole(
+    @CurrentUser() user: { userId: string },
+    @Body() body: CreateStaffRoleDto,
+  ) {
+    return this.admin.createStaffRole(user.userId, body);
+  }
+
+  @RequirePermission('staff.manage')
+  @Patch('staff-roles/:id')
+  updateStaffRole(
+    @CurrentUser() user: { userId: string },
+    @Param('id') id: string,
+    @Body() body: UpdateStaffRoleDto,
+  ) {
+    return this.admin.updateStaffRole(user.userId, id, body);
+  }
+
+  @RequirePermission('staff.manage')
+  @Delete('staff-roles/:id')
+  deleteStaffRole(
+    @CurrentUser() user: { userId: string },
+    @Param('id') id: string,
+  ) {
+    return this.admin.deleteStaffRole(user.userId, id);
+  }
+
+  @RequirePermission('staff.manage')
+  @Patch('users/:id/staff-role')
+  setUserStaffRole(
+    @CurrentUser() user: { userId: string },
+    @Param('id') id: string,
+    @Body() body: SetUserStaffRoleDto,
+  ) {
+    return this.admin.setUserStaffRole(user.userId, id, body.staffRoleId ?? null);
+  }
+
+  // --- Host supervision ---------------------------------------------------
+
+  @RequirePermission('hosts.manage')
+  @Get('hosts/:id/supervisor')
+  getHostSupervisor(@Param('id') id: string) {
+    return this.admin.getHostSupervisor(id);
+  }
+
+  @RequirePermission('hosts.manage')
+  @Post('hosts/:id/supervisor')
+  assignHostSupervisor(
+    @CurrentUser() user: { userId: string },
+    @Param('id') id: string,
+    @Body() body: AssignHostSupervisorDto,
+  ) {
+    return this.admin.assignHostSupervisor(user.userId, id, body.staffUserId);
+  }
+
+  @RequirePermission('hosts.manage')
+  @Delete('hosts/:id/supervisor')
+  removeHostSupervisor(
+    @CurrentUser() user: { userId: string },
+    @Param('id') id: string,
+  ) {
+    return this.admin.removeHostSupervisor(user.userId, id);
   }
 
   @Get('users/:id')

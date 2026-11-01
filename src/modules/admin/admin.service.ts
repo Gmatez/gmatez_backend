@@ -15,6 +15,7 @@ import { HostsService } from '../hosts/hosts.service';
 import { CallingService } from '../calling/calling.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { splitMinuteRate } from './pricing';
+import { assertKnownPermission, Permission } from '../../common/permissions';
 
 @Injectable()
 export class AdminService {
@@ -582,5 +583,205 @@ export class AdminService {
       },
     });
     this.logger.log({ actorId, action, targetType, targetId });
+  }
+
+  // --- Staff roles (dynamic RBAC) ---------------------------------------
+
+  listStaffRoles() {
+    return this.prisma.staffRole.findMany({
+      orderBy: { name: 'asc' },
+      include: { _count: { select: { members: true } } },
+    });
+  }
+
+  async createStaffRole(
+    actorId: string,
+    input: { name: string; permissions: Permission[] },
+  ) {
+    for (const permission of input.permissions) {
+      assertKnownPermission(permission);
+    }
+    const name = input.name.trim();
+    if (name.length < 2) {
+      throw new AppError(
+        ErrorCodes.VALIDATION_FAILED,
+        'Role name must be at least 2 characters',
+      );
+    }
+    const existing = await this.prisma.staffRole.findUnique({
+      where: { name },
+    });
+    if (existing) {
+      throw new AppError(
+        ErrorCodes.CONFLICT,
+        'A role with this name already exists',
+        HttpStatus.CONFLICT,
+      );
+    }
+    const role = await this.prisma.staffRole.create({
+      data: { name, permissions: input.permissions },
+    });
+    await this.audit(actorId, 'staff_role.create', 'staff_role', role.id, {
+      name,
+      permissions: input.permissions,
+    });
+    return role;
+  }
+
+  async updateStaffRole(
+    actorId: string,
+    roleId: string,
+    input: { name?: string; permissions?: Permission[] },
+  ) {
+    if (input.permissions) {
+      for (const permission of input.permissions) {
+        assertKnownPermission(permission);
+      }
+    }
+    const role = await this.prisma.staffRole.findUnique({
+      where: { id: roleId },
+    });
+    if (!role) {
+      throw new AppError(
+        ErrorCodes.NOT_FOUND,
+        'Role not found',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    const updated = await this.prisma.staffRole.update({
+      where: { id: roleId },
+      data: {
+        ...(input.name ? { name: input.name.trim() } : {}),
+        ...(input.permissions ? { permissions: input.permissions } : {}),
+      },
+    });
+    await this.audit(actorId, 'staff_role.update', 'staff_role', roleId, {
+      ...input,
+    });
+    return updated;
+  }
+
+  async deleteStaffRole(actorId: string, roleId: string) {
+    const role = await this.prisma.staffRole.findUnique({
+      where: { id: roleId },
+    });
+    if (!role) {
+      throw new AppError(
+        ErrorCodes.NOT_FOUND,
+        'Role not found',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    // Members fall back to unrestricted ADMIN access (staffRoleId -> null
+    // via the schema's onDelete: SetNull) rather than being locked out.
+    await this.prisma.staffRole.delete({ where: { id: roleId } });
+    await this.audit(actorId, 'staff_role.delete', 'staff_role', roleId, {
+      name: role.name,
+    });
+    return { ok: true };
+  }
+
+  async setUserStaffRole(
+    actorId: string,
+    userId: string,
+    staffRoleId: string | null,
+  ) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new AppError(
+        ErrorCodes.NOT_FOUND,
+        'User not found',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    if (user.role !== 'ADMIN') {
+      throw new AppError(
+        ErrorCodes.VALIDATION_FAILED,
+        'A staff role can only be assigned to an ADMIN account',
+      );
+    }
+    if (staffRoleId) {
+      const role = await this.prisma.staffRole.findUnique({
+        where: { id: staffRoleId },
+      });
+      if (!role) {
+        throw new AppError(
+          ErrorCodes.NOT_FOUND,
+          'Role not found',
+          HttpStatus.NOT_FOUND,
+        );
+      }
+    }
+    const updated = await this.prisma.user.update({
+      where: { id: userId },
+      data: { staffRoleId },
+      select: { id: true, email: true, staffRoleId: true },
+    });
+    await this.audit(actorId, 'user.staff_role.set', 'user', userId, {
+      staffRoleId,
+    });
+    return updated;
+  }
+
+  // --- Host supervision ---------------------------------------------------
+
+  getHostSupervisor(hostUserId: string) {
+    return this.prisma.hostSupervision.findUnique({
+      where: { hostUserId },
+      include: { staff: { select: { id: true, email: true } } },
+    });
+  }
+
+  async assignHostSupervisor(
+    actorId: string,
+    hostUserId: string,
+    staffUserId: string,
+  ) {
+    const host = await this.prisma.hostProfile.findUnique({
+      where: { userId: hostUserId },
+    });
+    if (!host) {
+      throw new AppError(
+        ErrorCodes.NOT_FOUND,
+        'Host not found',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    const staff = await this.prisma.user.findUnique({
+      where: { id: staffUserId },
+    });
+    if (!staff || staff.role !== 'ADMIN') {
+      throw new AppError(
+        ErrorCodes.VALIDATION_FAILED,
+        'Supervisor must be an ADMIN (staff) account',
+      );
+    }
+    const supervision = await this.prisma.hostSupervision.upsert({
+      where: { hostUserId },
+      create: { hostUserId, staffUserId },
+      update: { staffUserId, assignedAt: new Date() },
+    });
+    await this.audit(
+      actorId,
+      'host.supervisor.assign',
+      'host',
+      hostUserId,
+      { staffUserId },
+    );
+    return supervision;
+  }
+
+  async removeHostSupervisor(actorId: string, hostUserId: string) {
+    const existing = await this.prisma.hostSupervision.findUnique({
+      where: { hostUserId },
+    });
+    if (!existing) {
+      return { ok: true };
+    }
+    await this.prisma.hostSupervision.delete({ where: { hostUserId } });
+    await this.audit(actorId, 'host.supervisor.remove', 'host', hostUserId, {
+      previousStaffUserId: existing.staffUserId,
+    });
+    return { ok: true };
   }
 }

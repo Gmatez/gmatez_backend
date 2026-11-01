@@ -133,9 +133,16 @@ model User {
   passwordHash String
   role         UserRole   @default(USER)
   status       UserStatus @default(ACTIVE)
+  /// Scopes an ADMIN account's /admin/* access to a StaffRole's permission
+  /// set. Null on an ADMIN means unrestricted (today's behavior, unchanged).
+  /// Meaningless for a non-ADMIN role.
+  staffRoleId  String?
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
+  staffRole       StaffRole?          @relation(fields: [staffRoleId], references: [id], onDelete: SetNull)
+  supervisedHosts HostSupervision[]   @relation("Supervisor")
+  supervision     HostSupervision?    @relation("SupervisedHost")
   profile         Profile?
   wallet          Wallet?
   refreshTokens   RefreshToken[]
@@ -159,6 +166,37 @@ model User {
   notificationPreferences NotificationPreference?
 
   @@index([status, createdAt])
+  @@index([staffRoleId])
+}
+
+/// A dynamically creatable internal-staff role (Platform Manager,
+/// Coordinator, etc). The role set is dynamic; the permission vocabulary
+/// each role draws `permissions` from is a fixed catalog defined in
+/// src/common/permissions.ts, so a permission check can never typo-silently
+/// pass.
+model StaffRole {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  permissions String[] @default([])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members User[]
+}
+
+/// Which staff member (User.role == ADMIN) a given host reports to, for
+/// support/escalation routing. One active supervisor per host.
+model HostSupervision {
+  id          String   @id @default(uuid())
+  hostUserId  String   @unique
+  staffUserId String
+  assignedAt  DateTime @default(now())
+
+  host     HostProfile @relation(fields: [hostUserId], references: [userId], onDelete: Cascade, map: "HostSupervision_host_fkey")
+  staff    User        @relation("Supervisor", fields: [staffUserId], references: [id], onDelete: Cascade)
+  hostUser User        @relation("SupervisedHost", fields: [hostUserId], references: [id], onDelete: Cascade, map: "HostSupervision_hostUser_fkey")
+
+  @@index([staffUserId])
 }
 
 model RefreshToken {
@@ -234,6 +272,7 @@ model HostProfile {
 
   user                 User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
   agreementAcceptances HostAgreementAcceptance[]
+  supervision          HostSupervision?
 
   @@index([status, availability])
   @@index([status, updatedAt])

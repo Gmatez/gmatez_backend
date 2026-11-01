@@ -5,6 +5,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
+import { PermissionGuard } from './common/guards/permission.guard';
 import { AppThrottlerGuard } from './common/guards/throttler.guard';
 import { RequestContextInterceptor } from './common/interceptors/request-context.interceptor';
 import { AppConfigModule } from './config/app-config.module';
@@ -67,6 +68,7 @@ import { RedisModule } from './redis/redis.module';
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
+    { provide: APP_GUARD, useClass: PermissionGuard },
     { provide: APP_GUARD, useClass: AppThrottlerGuard },
     { provide: APP_INTERCEPTOR, useClass: RequestContextInterceptor },
     { provide: APP_FILTER, useClass: GlobalExceptionFilter },
