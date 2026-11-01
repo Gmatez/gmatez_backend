@@ -4,6 +4,7 @@ import { AppError, ErrorCodes } from '../../common/errors/app-error';
 import { PrismaService } from '../../database/prisma.service';
 import { WalletService } from '../wallet/wallet.service';
 import { HostsService } from '../hosts/hosts.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 const MIN_PAYOUT_CENTS = 500;
 
@@ -13,6 +14,7 @@ export class PayoutsService {
     private readonly prisma: PrismaService,
     private readonly wallet: WalletService,
     private readonly hosts: HostsService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   /** Authoritative payout rules. No external payout rail is integrated. */
@@ -191,6 +193,7 @@ export class PayoutsService {
     payoutId: string,
     status: PayoutStatus,
     failureReason?: string,
+    providerTransferId?: string,
   ) {
     const payout = await this.prisma.payoutRequest.findUnique({
       where: { id: payoutId },
@@ -209,12 +212,19 @@ export class PayoutsService {
         HttpStatus.CONFLICT,
       );
     }
+    // No payout rail (RazorpayX etc.) is integrated, so the app can never
+    // discover on its own that a transfer happened. COMPLETED is allowed
+    // only as a manual confirmation: the admin made the bank/UPI transfer
+    // themselves outside this app and records the reference here as proof,
+    // rather than the status silently being unreachable forever.
     if (status === 'COMPLETED') {
-      throw new AppError(
-        ErrorCodes.PAYOUT_NOT_ELIGIBLE,
-        'External payout is not configured. COMPLETED would claim a bank transfer that did not happen.',
-        HttpStatus.UNPROCESSABLE_ENTITY,
-      );
+      const reference = providerTransferId?.trim();
+      if (!reference) {
+        throw new AppError(
+          ErrorCodes.VALIDATION_FAILED,
+          'providerTransferId is required to mark a payout COMPLETED — record the bank/UPI reference for the transfer you made.',
+        );
+      }
     }
     if (status === 'REJECTED' || status === 'FAILED') {
       await this.wallet.applyLedger({
@@ -234,6 +244,12 @@ export class PayoutsService {
         status,
         failureReason: failureReason ?? null,
         processedAt: status === 'REQUESTED' ? null : new Date(),
+        ...(status === 'COMPLETED'
+          ? {
+              providerTransferId: providerTransferId!.trim(),
+              externalTransferStatus: 'MANUALLY_CONFIRMED',
+            }
+          : {}),
       },
     });
     await this.prisma.auditLog.create({
@@ -242,8 +258,49 @@ export class PayoutsService {
         action: `payout.${status.toLowerCase()}`,
         targetType: 'payout',
         targetId: payoutId,
+        ...(providerTransferId ? { metadata: { providerTransferId } } : {}),
       },
     });
+    await this.notifyStatus(payout.userId, payoutId, status).catch(() => {
+      // A notification failure must never fail the status update itself —
+      // the wallet ledger/audit log above already committed.
+    });
     return updated;
+  }
+
+  private async notifyStatus(
+    userId: string,
+    payoutId: string,
+    status: PayoutStatus,
+  ) {
+    const copy: Partial<Record<PayoutStatus, { title: string; body: string }>> =
+      {
+        PROCESSING: {
+          title: 'Payout processing',
+          body: 'Your payout request is being processed.',
+        },
+        COMPLETED: {
+          title: 'Payout sent',
+          body: 'Your payout has been transferred.',
+        },
+        REJECTED: {
+          title: 'Payout rejected',
+          body: 'Your payout request was rejected and the amount was returned to your wallet.',
+        },
+        FAILED: {
+          title: 'Payout failed',
+          body: 'Your payout could not be completed and the amount was returned to your wallet.',
+        },
+      };
+    const message = copy[status];
+    if (!message) {
+      return;
+    }
+    await this.notifications.notifyUser(userId, {
+      type: 'payout',
+      title: message.title,
+      body: message.body,
+      data: { type: 'payout', payoutId },
+    });
   }
 }

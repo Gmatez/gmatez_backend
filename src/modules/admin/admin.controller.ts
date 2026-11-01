@@ -99,6 +99,16 @@ export class ResolvePayoutDto {
   @IsString()
   @MaxLength(500)
   failureReason?: string;
+
+  /** Required when status is COMPLETED — the bank/UPI reference for a
+   *  transfer the admin made manually outside this app (no payout rail is
+   *  integrated yet, so this records proof of a real transfer instead of
+   *  letting the app silently claim one happened). */
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  providerTransferId?: string;
 }
 
 export class RefundCallDto {
@@ -514,6 +524,7 @@ export class AdminController {
       id,
       body.status,
       body.failureReason,
+      body.providerTransferId,
     );
   }
 

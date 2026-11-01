@@ -166,12 +166,14 @@ export class AdminService {
     payoutId: string,
     status: PayoutStatus,
     failureReason?: string,
+    providerTransferId?: string,
   ) {
     return this.payouts.adminSetStatus(
       actorId,
       payoutId,
       status,
       failureReason,
+      providerTransferId,
     );
   }
 

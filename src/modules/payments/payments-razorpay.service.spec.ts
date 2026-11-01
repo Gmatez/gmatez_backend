@@ -154,10 +154,12 @@ function harness(options?: { missing?: boolean }) {
     createIntent: jest.fn(),
     verifyCheckoutSignature: jest.fn(() => true),
   };
+  const notifications = { notifyUser: jest.fn().mockResolvedValue(null) };
   const service = new PaymentsService(
     prisma as never,
     wallet as never,
     { get: () => 'rzp_test_public' } as never,
+    notifications as never,
     provider,
   );
   return { service, state, provider, wallet };

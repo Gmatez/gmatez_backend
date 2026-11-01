@@ -8,6 +8,7 @@ import { RazorpayPaymentProvider } from '../../providers/payments/razorpay-payme
 import { AppConfigService } from '../../config/app-config';
 import { hmacSha256, sha256 } from '../../common/crypto/hashing';
 import { WalletService } from '../wallet/wallet.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { assessCapture } from './payment-integrity';
 
 type CaptureInput = {
@@ -28,6 +29,7 @@ export class PaymentsService {
     private readonly prisma: PrismaService,
     private readonly wallet: WalletService,
     private readonly config: AppConfigService,
+    private readonly notifications: NotificationsService,
     @Inject(PAYMENT_PROVIDER) private readonly provider: PaymentProvider,
   ) {}
 
@@ -796,6 +798,7 @@ export class PaymentsService {
       };
     }
     const payloadHash = sha256(input.rawBody ?? input.eventId).slice(0, 128);
+    let notifyInfo: { userId: string; amountCents: number } | null = null;
     try {
       const result = await this.prisma.$transaction(async (tx) => {
         await tx.providerEvent.create({
@@ -852,8 +855,28 @@ export class PaymentsService {
           orderId: current.providerPaymentId,
           providerPaymentId: input.paymentId,
         });
+        notifyInfo = { userId: current.userId, amountCents: credit };
         return { duplicate: false, credited: true, paymentId: current.id };
       });
+      if (result.credited && notifyInfo) {
+        // Outside the transaction: a push failure must never roll back an
+        // already-committed wallet credit.
+        const info: { userId: string; amountCents: number } = notifyInfo;
+        await this.notifications
+          .notifyUser(info.userId, {
+            type: 'wallet',
+            title: 'Wallet credited',
+            body: 'Your payment was successful and your wallet has been topped up.',
+            data: { type: 'wallet', paymentId: result.paymentId },
+          })
+          .catch((error) => {
+            this.logger.warn({
+              event: 'wallet_credit_notify_failed',
+              paymentId: result.paymentId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+      }
       return { ...result, status: 'SUCCEEDED' as const };
     } catch (error) {
       if (
