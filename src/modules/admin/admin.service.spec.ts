@@ -11,6 +11,10 @@ function harness() {
       findUnique: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
+      create: jest.fn(),
+    },
+    profile: {
+      create: jest.fn(),
     },
     platformPricing: {
       findUnique: jest.fn(),
@@ -31,7 +35,11 @@ function harness() {
       upsert: jest.fn(),
       delete: jest.fn(),
     },
+    $transaction: jest.fn(),
   };
+  prisma.$transaction.mockImplementation((callback: (tx: typeof prisma) => unknown) =>
+    callback(prisma),
+  );
   const wallet = {
     ensureForUser: jest.fn().mockResolvedValue({ userId: 'user-1' }),
     applyLedger: jest.fn(),
@@ -332,5 +340,71 @@ describe('staff roles and host supervision', () => {
         data: expect.objectContaining({ action: 'host.supervisor.assign' }),
       }),
     );
+  });
+
+  it('creates a staff member and writes an audit row', async () => {
+    const { service, prisma } = harness();
+    prisma.staffRole.findUnique.mockResolvedValue({ id: 'role-1' });
+    prisma.user.create.mockResolvedValue({
+      id: 'admin-3',
+      email: 'coordinator@gmatez.com',
+      status: 'ACTIVE',
+      createdAt: new Date('2026-01-01'),
+      staffRoleId: 'role-1',
+    });
+    const result = await service.createStaffMember('admin-1', {
+      email: 'Coordinator@Gmatez.com',
+      password: 'a-strong-password',
+      displayName: 'Priya',
+      staffRoleId: 'role-1',
+    });
+    expect(result.id).toBe('admin-3');
+    expect(prisma.user.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          email: 'coordinator@gmatez.com',
+          role: 'ADMIN',
+          staffRoleId: 'role-1',
+        }),
+      }),
+    );
+    expect(prisma.profile.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ userId: 'admin-3', displayName: 'Priya' }),
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ action: 'staff.create' }),
+      }),
+    );
+  });
+
+  it('rejects creating a staff member with an unknown staff role', async () => {
+    const { service, prisma } = harness();
+    prisma.staffRole.findUnique.mockResolvedValue(null);
+    await expect(
+      service.createStaffMember('admin-1', {
+        email: 'coordinator@gmatez.com',
+        password: 'a-strong-password',
+        displayName: 'Priya',
+        staffRoleId: 'missing-role',
+      }),
+    ).rejects.toMatchObject({ code: ErrorCodes.NOT_FOUND });
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects creating a staff member with a duplicate email', async () => {
+    const { service, prisma } = harness();
+    prisma.user.create.mockRejectedValue(
+      Object.assign(new Error('unique violation'), { code: 'P2002' }),
+    );
+    await expect(
+      service.createStaffMember('admin-1', {
+        email: 'coordinator@gmatez.com',
+        password: 'a-strong-password',
+        displayName: 'Priya',
+      }),
+    ).rejects.toMatchObject({ code: ErrorCodes.CONFLICT });
   });
 });

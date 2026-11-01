@@ -103,6 +103,14 @@ export class AdminReadService {
     const startToday = startOfUtcDay(0);
     const sevenDays = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    // A "user" here means a plain caller account only — never someone who
+    // has applied to be a host (regardless of application status) and
+    // never an internal staff/admin account. Those are their own counts
+    // below, never folded into this one.
+    const pureCallerFilter = {
+      role: 'USER' as const,
+      hostProfile: null,
+    };
     const [
       usersByStatus,
       hostsByStatus,
@@ -119,8 +127,13 @@ export class AdminReadService {
       newUsers7d,
       recentlyActive,
       onlineHosts,
+      adminsTotal,
     ] = await Promise.all([
-      this.prisma.user.groupBy({ by: ['status'], _count: { _all: true } }),
+      this.prisma.user.groupBy({
+        by: ['status'],
+        where: pureCallerFilter,
+        _count: { _all: true },
+      }),
       this.prisma.hostProfile.groupBy({
         by: ['status'],
         _count: { _all: true },
@@ -151,12 +164,17 @@ export class AdminReadService {
         _sum: { amountCents: true },
         _count: { _all: true },
       }),
-      this.prisma.user.count({ where: { createdAt: { gte: startToday } } }),
-      this.prisma.user.count({ where: { createdAt: { gte: sevenDays } } }),
+      this.prisma.user.count({
+        where: { ...pureCallerFilter, createdAt: { gte: startToday } },
+      }),
+      this.prisma.user.count({
+        where: { ...pureCallerFilter, createdAt: { gte: sevenDays } },
+      }),
       this.prisma.profile.count({ where: { lastActiveAt: { gte: dayAgo } } }),
       this.prisma.hostProfile.count({
         where: { status: 'ACTIVE', availability: 'ONLINE' },
       }),
+      this.prisma.user.count({ where: { role: 'ADMIN' } }),
     ]);
 
     const money = this.moneyFromLedger(ledger);
@@ -183,6 +201,9 @@ export class AdminReadService {
           HOST_AVAILABILITY,
         ),
         online: onlineHosts,
+      },
+      admins: {
+        total: adminsTotal,
       },
       calls: {
         total: sumValues(calls),
@@ -547,6 +568,11 @@ export class AdminReadService {
     const createdAt = createdAtRange(from, to);
     const q = query.q?.trim();
     const where: Prisma.UserWhereInput = {
+      // This list is callers only — anyone with a HostProfile belongs on
+      // the Hosts page, anyone with role ADMIN belongs on the Staff page,
+      // never both/either counted as a plain "user".
+      role: 'USER',
+      hostProfile: null,
       ...(status ? { status: status } : {}),
       ...(createdAt ? { createdAt } : {}),
       ...(q

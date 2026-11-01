@@ -22,6 +22,7 @@ import {
   ArrayMaxSize,
   IsArray,
   IsBoolean,
+  IsEmail,
   IsEnum,
   IsIn,
   IsInt,
@@ -83,6 +84,29 @@ export class AssignHostSupervisorDto {
   @ApiProperty()
   @IsUUID()
   staffUserId!: string;
+}
+
+export class CreateStaffMemberDto {
+  @ApiProperty({ example: 'coordinator@gmatez.com' })
+  @IsEmail()
+  email!: string;
+
+  @ApiProperty({ minLength: 10, maxLength: 128 })
+  @IsString()
+  @MinLength(10)
+  @MaxLength(128)
+  password!: string;
+
+  @ApiProperty({ example: 'Priya' })
+  @IsString()
+  @MinLength(2)
+  @MaxLength(80)
+  displayName!: string;
+
+  @ApiProperty({ required: false, nullable: true })
+  @IsOptional()
+  @IsUUID()
+  staffRoleId?: string | null;
 }
 
 export class SetUserStatusDto {
@@ -411,6 +435,15 @@ export class AdminController {
   @Get('staff')
   listStaffMembers() {
     return this.admin.listStaffMembers();
+  }
+
+  @RequirePermission('staff.manage')
+  @Post('staff')
+  createStaffMember(
+    @CurrentUser() user: { userId: string },
+    @Body() body: CreateStaffMemberDto,
+  ) {
+    return this.admin.createStaffMember(user.userId, body);
   }
 
   @RequirePermission('staff.manage')

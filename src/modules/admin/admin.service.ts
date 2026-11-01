@@ -7,6 +7,7 @@ import {
   ReportStatus,
   UserStatus,
 } from '@prisma/client';
+import * as argon2 from 'argon2';
 import { PrismaService } from '../../database/prisma.service';
 import { AppError, ErrorCodes } from '../../common/errors/app-error';
 import { WalletService } from '../wallet/wallet.service';
@@ -34,6 +35,9 @@ export class AdminService {
     const query = q?.trim();
     return this.prisma.user.findMany({
       where: {
+        // Callers only — see AdminReadService.listUsers for why.
+        role: 'USER',
+        hostProfile: null,
         ...(status ? { status } : {}),
         ...(query
           ? {
@@ -588,8 +592,9 @@ export class AdminService {
 
   // --- Staff roles (dynamic RBAC) ---------------------------------------
 
-  /** Lightweight list for pickers (assign a staff role, assign a host
-   *  supervisor) — not the full paginated user list. */
+  /** Every internal staff/admin account — the Staff page's list, and also
+   *  reused as a lightweight picker (assign a staff role, assign a host
+   *  supervisor). */
   listStaffMembers() {
     return this.prisma.user.findMany({
       where: { role: 'ADMIN' },
@@ -597,9 +602,72 @@ export class AdminService {
       select: {
         id: true,
         email: true,
+        status: true,
+        createdAt: true,
         staffRole: { select: { id: true, name: true } },
+        profile: { select: { displayName: true } },
       },
     });
+  }
+
+  async createStaffMember(
+    actorId: string,
+    input: {
+      email: string;
+      password: string;
+      displayName: string;
+      staffRoleId?: string | null;
+    },
+  ) {
+    const email = input.email.trim().toLowerCase();
+    if (input.staffRoleId) {
+      const role = await this.prisma.staffRole.findUnique({
+        where: { id: input.staffRoleId },
+      });
+      if (!role) {
+        throw new AppError(ErrorCodes.NOT_FOUND, 'Staff role not found', HttpStatus.NOT_FOUND);
+      }
+    }
+    const passwordHash = await argon2.hash(input.password, {
+      type: argon2.argon2id,
+    });
+    try {
+      const staff = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.user.create({
+          data: {
+            email,
+            passwordHash,
+            role: 'ADMIN',
+            staffRoleId: input.staffRoleId ?? null,
+          },
+        });
+        await tx.profile.create({
+          data: { userId: created.id, displayName: input.displayName.trim() },
+        });
+        return created;
+      });
+      await this.audit(actorId, 'staff.create', 'user', staff.id, {
+        email,
+        staffRoleId: input.staffRoleId ?? null,
+      });
+      return {
+        id: staff.id,
+        email: staff.email,
+        status: staff.status,
+        createdAt: staff.createdAt,
+        staffRoleId: staff.staffRoleId,
+      };
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === 'P2002') {
+        throw new AppError(
+          ErrorCodes.CONFLICT,
+          'An account with this email already exists',
+          HttpStatus.CONFLICT,
+        );
+      }
+      throw error;
+    }
   }
 
   listStaffRoles() {
